@@ -16,135 +16,191 @@ const firebaseConfig = {
   projectId: "investimentos-d4a38",
   storageBucket: "investimentos-d4a38.firebasestorage.app",
   messagingSenderId: "874496232831",
-  appId: "1:874496232831:web:d1c44ea3ccc6b369971e4a",
-  measurementId: "G-TMX90ZMLFJ"
+  appId: "1:874496232831:web:d1c44ea3ccc6b369971e4a"
 };
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
-
 const meses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-const DESCONTO = 0.2;
+const DESCONTO = 0.20;
 let charts = {};
 
-function fmt(v){ return v.toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:0,maximumFractionDigits:0}); }
+function fmt(v){ return v.toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:2,maximumFractionDigits:2}); }
 function fmtP(v){ return (v>=0?'+':'')+v.toFixed(2)+'%'; }
-function fmtPn(v){ return v.toFixed(4)+'%'; }
 
-function parseRows(rows) {
+// ── PARSER ESPECÍFICO PARA A PLANILHA RICARDO SATURNINO ──────────────
+// Estrutura: header na linha 24 (índice), dados a partir da linha 25
+// col 0 = Mês, col 1 = Ano, col 5 = Data, col 7 = Taxa Δ%, col 9 = Financeiro diário, col 11 = Acumulado bruto
+function parseRicardoSheet(wb) {
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+
+  // Encontra linha de dados: primeira linha onde col 0 é número (mês) e col 11 tem saldo
+  let startRow = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (r[0] && typeof r[0] === 'number' && r[0] >= 1 && r[0] <= 12 &&
+        r[1] && typeof r[1] === 'number' && r[1] >= 2020 &&
+        r[11] != null && typeof r[11] === 'number' && r[11] > 1000) {
+      startRow = i;
+      break;
+    }
+  }
+  if (startRow < 0) return null;
+
+  const result = [];
+  for (let i = startRow; i < rows.length; i++) {
+    const r = rows[i];
+    const mes = r[0], ano = r[1], saldo = r[11];
+    if (!mes || !ano || saldo == null) continue;
+    if (typeof mes !== 'number' || typeof ano !== 'number') continue;
+    if (saldo <= 0) continue;
+
+    // Data: col 5 pode ser serial Excel ou já Date
+    let data = '';
+    if (r[5]) {
+      if (typeof r[5] === 'number') {
+        // serial Excel → date
+        const d = new Date(Math.round((r[5] - 25569) * 86400 * 1000));
+        data = d.toISOString().split('T')[0];
+      } else if (r[5] instanceof Date) {
+        data = r[5].toISOString().split('T')[0];
+      } else {
+        data = String(r[5]).split('T')[0];
+      }
+    }
+
+    const taxa = (typeof r[7] === 'number') ? r[7] : 0;
+    const financeiro = (typeof r[9] === 'number') ? r[9] : 0;
+    const obs = r[12] ? String(r[12]) : '';
+
+    result.push({ mes: Math.round(mes), ano: Math.round(ano), data, taxa, financeiro, saldo, obs });
+  }
+  return result.length > 10 ? result : null;
+}
+
+// ── PARSER GENÉRICO (fallback) ────────────────────────────────────────
+function parseGeneric(wb) {
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
   if (!rows || rows.length < 2) return null;
   const headers = rows[0].map(h => (h||'').toString().toLowerCase().trim());
   const find = (...opts) => headers.findIndex(h => opts.some(o => h.includes(o)));
-  const iMes = find('mes','mês','month');
+  const iMes = find('mes','mês');
   const iAno = find('ano','year');
-  const iTaxa = find('taxa','%','delta','rendimento diário','diário');
-  const iRend = find('financeiro','rend','valor dia');
-  const iSaldo = find('saldo','acumulado','atual','balance');
-
+  const iTaxa = find('taxa','delta','δ','%');
+  const iRend = find('financeiro','rend');
+  const iSaldo = find('acumulado','saldo','atual');
   if (iSaldo < 0) return null;
-
-  return rows.slice(1)
-    .filter(r => r[iSaldo] !== undefined && r[iSaldo] !== '')
-    .map(r => ({
-      mes: iMes >= 0 ? Number(r[iMes]) || 0 : 0,
-      ano: iAno >= 0 ? Number(r[iAno]) || 0 : 0,
-      taxa: iTaxa >= 0 ? Number(r[iTaxa]) || 0 : 0,
-      rend: iRend >= 0 ? Number(r[iRend]) || 0 : 0,
-      saldo: Number(r[iSaldo]) || 0,
-    })).filter(r => r.saldo > 0);
+  return rows.slice(1).filter(r => r[iSaldo] > 0).map(r => ({
+    mes: Number(r[iMes])||0, ano: Number(r[iAno])||0, taxa: Number(r[iTaxa])||0,
+    financeiro: Number(r[iRend])||0, saldo: Number(r[iSaldo])||0, obs: ''
+  })).filter(r => r.saldo > 0);
 }
 
+// ── CALC MENSAIS ──────────────────────────────────────────────────────
 function getMonthly(raw) {
-  const byMonth = {};
+  const byKey = {};
   raw.forEach(r => {
-    const k = `${r.mes}/${r.ano}`;
-    if (!byMonth[k]) byMonth[k] = { mes: r.mes, ano: r.ano, inicio: r.saldo, fim: r.saldo, label: `${meses[r.mes-1]}/${String(r.ano).slice(2)}` };
-    byMonth[k].fim = r.saldo;
+    const k = `${r.mes}-${r.ano}`;
+    if (!byKey[k]) byKey[k] = { mes: r.mes, ano: r.ano, inicio: r.saldo, fim: r.saldo, rendSum: 0, label: `${meses[r.mes-1]}/${String(r.ano).slice(2)}` };
+    byKey[k].fim = r.saldo;
+    byKey[k].rendSum += r.financeiro || 0;
   });
-  const keys = Object.keys(byMonth);
+  const keys = Object.keys(byKey);
   return keys.map((k, i) => {
-    const d = byMonth[k];
-    const prev = i > 0 ? byMonth[keys[i-1]].fim : d.inicio;
-    const rend = d.fim - prev;
-    const pct = prev > 0 ? (rend / prev) * 100 : 0;
-    return { ...d, saldo: d.fim, saldoLiq: d.fim * (1-DESCONTO), rend, rendLiq: rend * (1-DESCONTO), pct };
+    const d = byKey[k];
+    const prev = i > 0 ? byKey[keys[i-1]].fim : d.inicio;
+    const rendBruto = d.fim - prev;
+    const pct = prev > 0 ? (rendBruto / prev) * 100 : 0;
+    return { ...d, saldo: d.fim, saldoLiq: d.fim * (1-DESCONTO), rendBruto, rendLiq: rendBruto * (1-DESCONTO), pct };
   });
 }
 
-function calcTotalAportado(raw) {
-  // detecta primeiro registro + saltos grandes (aportes)
-  const THRESHOLD = 1000;
+function calcAportes(raw) {
+  // Detecta aportes pelo texto na coluna obs ou por saltos grandes sem taxa
   let total = 0;
-  let prev = 0;
   raw.forEach((r, i) => {
-    if (i === 0) { total += r.saldo; prev = r.saldo; return; }
-    const delta = r.saldo - prev;
-    if (delta > THRESHOLD && r.taxa < 0.005) {
-      // provável aporte: delta muito maior que rendimento esperado
-      const rendEsperado = prev * r.taxa;
-      const aporte = delta - rendEsperado;
-      if (aporte > THRESHOLD) total += aporte;
+    const obsLower = (r.obs||'').toLowerCase();
+    if (obsLower.includes('aporte')) {
+      // extrai valor do texto ex: "1º Aporte - R$ 55.000,00"
+      const match = obsLower.match(/r\$\s*([\d.,]+)/);
+      if (match) {
+        const val = parseFloat(match[1].replace(/\./g,'').replace(',','.'));
+        if (!isNaN(val)) total += val;
+      } else if (i === 0) {
+        total += r.saldo;
+      }
     }
-    prev = r.saldo;
   });
+  // fallback: se não achou texto, soma primeiro saldo + saltos grandes sem taxa
+  if (total === 0) {
+    total = raw[0]?.saldo || 0;
+    for (let i = 1; i < raw.length; i++) {
+      if (raw[i].taxa === 0 && raw[i].financeiro === 0) {
+        const delta = raw[i].saldo - raw[i-1].saldo;
+        if (delta > 500) total += delta;
+      }
+    }
+  }
   return total;
 }
 
+// ── RENDER ────────────────────────────────────────────────────────────
 function renderDashboard(raw, uploadedAt) {
   const monthly = getMonthly(raw);
-  const saldoBruto = raw[raw.length-1].saldo;
-  const saldoLiq = saldoBruto * (1-DESCONTO);
-  const totalAportado = calcTotalAportado(raw);
+  const saldoBruto = raw.filter(r => r.saldo > 0).slice(-1)[0].saldo;
+  const saldoLiq = saldoBruto * (1 - DESCONTO);
+  const totalAportado = calcAportes(raw);
   const lucroLiq = saldoLiq - totalAportado;
-  const pctTotalLiq = totalAportado > 0 ? (lucroLiq / totalAportado) * 100 : 0;
+  const pctLiq = totalAportado > 0 ? (lucroLiq / totalAportado) * 100 : 0;
 
   const diasUteis = raw.filter(r => r.taxa > 0);
   const semana = diasUteis.slice(-5);
-  const rendSemana = semana.reduce((s,r) => s+r.rend, 0) * (1-DESCONTO);
-  const saldoIniSem = semana.length > 0 ? (semana[0].saldo - semana[0].rend) : saldoBruto;
-  const pctSemana = saldoIniSem > 0 ? (rendSemana / (saldoIniSem*(1-DESCONTO))) * 100 : 0;
+  const rendSemBruto = semana.reduce((s,r) => s + r.financeiro, 0);
+  const rendSemLiq = rendSemBruto * (1 - DESCONTO);
+  const saldoBaseS = semana.length > 0 ? (semana[0].saldo - semana[0].financeiro) : saldoBruto;
+  const pctSem = saldoBaseS > 0 ? (rendSemLiq / (saldoBaseS*(1-DESCONTO))) * 100 : 0;
 
-  const ultMes = monthly[monthly.length-1];
-  const taxaMedia = diasUteis.length > 0 ? diasUteis.reduce((s,r) => s+r.taxa, 0) / diasUteis.length * 100 : 0;
+  const ultMes = monthly[monthly.length - 1];
+  const taxaMedia = diasUteis.length > 0 ? diasUteis.reduce((s,r) => s + r.taxa, 0) / diasUteis.length * 100 : 0;
+  const upDate = uploadedAt ? new Date(uploadedAt).toLocaleString('pt-BR') : '';
 
   document.getElementById('upload-section').style.display = 'none';
   const dash = document.getElementById('dashboard-section');
   dash.style.display = 'block';
-
-  const upDate = uploadedAt ? new Date(uploadedAt).toLocaleString('pt-BR') : '';
-
   dash.innerHTML = `
     <div class="header">
       <div>
         <h1>Dashboard de Investimentos</h1>
-        <p class="sub">Atualizado em: ${upDate} &nbsp;·&nbsp; ${raw.length} registros diários · ${monthly.length} meses</p>
+        <p class="sub">Atualizado: ${upDate} &nbsp;·&nbsp; ${raw.length} dias &nbsp;·&nbsp; ${monthly.length} meses</p>
       </div>
-      <button class="btn-upload-new" id="btnNovaPlani">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <button class="btn-outline" id="btnNovaPlani">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         Nova planilha
       </button>
     </div>
 
     <div class="metrics">
-      <div class="mc bruto">
+      <div class="mc bruto-card">
         <div class="ml">Saldo bruto</div>
-        <div class="mv">${fmt(saldoBruto)}</div>
-        <div class="ms muted">Antes do DARF (20%)</div>
+        <div class="mv neutral">${fmt(saldoBruto)}</div>
+        <div class="ms muted">antes do DARF (20%)</div>
       </div>
       <div class="mc">
         <div class="ml">Saldo líquido</div>
         <div class="mv green">${fmt(saldoLiq)}</div>
-        <div class="ms muted">Total aportado: ${fmt(totalAportado)}</div>
+        <div class="ms muted">aportado: ${fmt(totalAportado)}</div>
       </div>
       <div class="mc">
-        <div class="ml">Lucro líquido</div>
+        <div class="ml">Lucro líquido total</div>
         <div class="mv green">${fmt(lucroLiq)}</div>
-        <div class="ms green">${fmtP(pctTotalLiq)} acumulado</div>
+        <div class="ms green">${fmtP(pctLiq)} acumulado</div>
       </div>
       <div class="mc">
         <div class="ml">Semana (líq.)</div>
-        <div class="mv ${rendSemana>=0?'green':'red'}">${fmt(rendSemana)}</div>
-        <div class="ms ${pctSemana>=0?'green':'red'}">${fmtP(pctSemana)}</div>
+        <div class="mv ${rendSemLiq>=0?'green':'red'}">${fmt(rendSemLiq)}</div>
+        <div class="ms ${pctSem>=0?'green':'red'}">${fmtP(pctSem)}</div>
       </div>
       <div class="mc">
         <div class="ml">${ultMes.label} (líq.)</div>
@@ -153,13 +209,13 @@ function renderDashboard(raw, uploadedAt) {
       </div>
       <div class="mc">
         <div class="ml">Taxa média/dia</div>
-        <div class="mv amber">${fmtPn(taxaMedia)}</div>
-        <div class="ms muted">dias úteis operados</div>
+        <div class="mv amber">${taxaMedia.toFixed(4)}%</div>
+        <div class="ms muted">${diasUteis.length} dias úteis</div>
       </div>
     </div>
 
     <div class="charts-row">
-      <div class="card wide">
+      <div class="card span2">
         <div class="card-header">
           <span class="card-title">Evolução do saldo líquido</span>
           <div class="tabs" id="tabsHist">
@@ -169,38 +225,40 @@ function renderDashboard(raw, uploadedAt) {
             <button class="tab" data-p="2026">2026</button>
           </div>
         </div>
-        <div class="cw"><canvas id="histChart" role="img" aria-label="Evolução do saldo líquido mensal"></canvas></div>
+        <div class="cw h240"><canvas id="histChart" role="img" aria-label="Evolução do saldo líquido mensal"></canvas></div>
       </div>
       <div class="card">
         <div class="card-title">Rendimento mensal líquido (R$)</div>
-        <div class="cw"><canvas id="rendChart" role="img" aria-label="Rendimento mensal líquido"></canvas></div>
-      </div>
-    </div>
-
-    <div class="charts-row">
-      <div class="card">
-        <div class="card-title">Taxa diária (% ao dia) — últimos 90 dias</div>
-        <div class="cw sm"><canvas id="dailyChart" role="img" aria-label="Taxa de rendimento diário"></canvas></div>
+        <div class="cw h220"><canvas id="rendChart" role="img" aria-label="Rendimento mensal líquido em reais"></canvas></div>
       </div>
       <div class="card">
         <div class="card-title">Rendimento mensal líquido (%)</div>
-        <div class="cw sm"><canvas id="pctChart" role="img" aria-label="Percentual de rendimento mensal líquido"></canvas></div>
+        <div class="cw h220"><canvas id="pctChart" role="img" aria-label="Percentual de rendimento mensal líquido"></canvas></div>
       </div>
+    </div>
+
+    <div class="card" style="margin-bottom:1rem">
+      <div class="card-title">Taxa diária (% ao dia) — últimos 90 dias úteis</div>
+      <div class="cw h140"><canvas id="dailyChart" role="img" aria-label="Taxa de rendimento diário"></canvas></div>
     </div>
 
     <div class="card">
       <div class="card-title">Histórico mensal detalhado</div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Mês</th><th>Saldo Bruto</th><th>Saldo Líquido</th><th>Rend. Líq. R$</th><th>Rend. %</th></tr></thead>
+          <thead><tr><th>Mês/Ano</th><th>Saldo Bruto</th><th>Saldo Líquido</th><th>Rend. Líq. R$</th><th>Rend. %</th></tr></thead>
           <tbody id="tBody"></tbody>
         </table>
       </div>
     </div>
+    <p class="fn">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+      Dados sincronizados via Firebase · atualizados em tempo real em todos os dispositivos
+    </p>
   `;
 
   document.getElementById('btnNovaPlani').addEventListener('click', () => {
-    document.getElementById('dashboard-section').style.display = 'none';
+    dash.style.display = 'none';
     document.getElementById('upload-section').style.display = 'flex';
   });
 
@@ -214,226 +272,180 @@ function renderDashboard(raw, uploadedAt) {
 
   // Tabela
   const tbody = document.getElementById('tBody');
-  monthly.slice().reverse().forEach(d => {
+  [...monthly].reverse().forEach(d => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td><strong>${d.label}</strong></td><td>${fmt(d.saldo)}</td><td class="green">${fmt(d.saldoLiq)}</td><td class="${d.rendLiq>=0?'green':'red'}">${fmt(d.rendLiq)}</td><td><span class="badge ${d.pct>=0?'bp':'bn'}">${fmtP(d.pct)}</span></td>`;
+    tr.innerHTML = `<td><strong>${d.label}</strong></td><td class="muted">${fmt(d.saldo)}</td><td class="green">${fmt(d.saldoLiq)}</td><td class="${d.rendLiq>=0?'green':'red'}">${fmt(d.rendLiq)}</td><td><span class="badge ${d.pct>=0?'bp':'bn'}">${fmtP(d.pct)}</span></td>`;
     tbody.appendChild(tr);
   });
 
-  // Charts
-  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const isDark = window.matchMedia('(prefers-color-scheme:dark)').matches;
   const gc = isDark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.06)';
-  const tc = isDark ? '#aaa' : '#666';
+  const tc = isDark ? '#999' : '#666';
 
   buildHist('all', monthly, gc, tc);
 
-  // Rendimento mensal liquido barras
   destroyChart('rendChart');
   charts['rendChart'] = new Chart(document.getElementById('rendChart'), {
-    type: 'bar',
-    data: {
-      labels: monthly.map(d=>d.label),
-      datasets: [{ data: monthly.map(d=>d.rendLiq), backgroundColor: monthly.map(d=>d.rendLiq>=0?'rgba(16,185,129,.75)':'rgba(239,68,68,.75)'), borderRadius: 3, borderSkipped: false }]
-    },
-    options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ x:{grid:{display:false},ticks:{color:tc,font:{size:9},maxTicksLimit:10}}, y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}} } }
+    type:'bar',
+    data:{ labels:monthly.map(d=>d.label), datasets:[{ data:monthly.map(d=>d.rendLiq), backgroundColor:monthly.map(d=>d.rendLiq>=0?'rgba(16,185,129,.75)':'rgba(239,68,68,.75)'), borderRadius:3, borderSkipped:false }] },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ x:{grid:{display:false},ticks:{color:tc,font:{size:9},maxTicksLimit:12}}, y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}} } }
   });
 
-  // Taxa diária
-  const diasRecentes = raw.filter(r=>r.taxa>0).slice(-90);
-  destroyChart('dailyChart');
-  charts['dailyChart'] = new Chart(document.getElementById('dailyChart'), {
-    type: 'line',
-    data: {
-      labels: diasRecentes.map((_,i)=>''),
-      datasets: [{ data: diasRecentes.map(r=>(r.taxa*100).toFixed(4)), borderColor:'#f59e0b', borderWidth:1.5, pointRadius:0, backgroundColor:'rgba(245,158,11,.06)', fill:true, tension:.3 }]
-    },
-    options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ x:{display:false}, y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>v+'%'}} } }
-  });
-
-  // % mensal liquido
   destroyChart('pctChart');
   charts['pctChart'] = new Chart(document.getElementById('pctChart'), {
-    type: 'bar',
-    data: {
-      labels: monthly.map(d=>d.label),
-      datasets: [{ data: monthly.map(d=>parseFloat(d.pct.toFixed(2))), backgroundColor: monthly.map(d=>d.pct>=0?'rgba(16,185,129,.6)':'rgba(239,68,68,.6)'), borderRadius: 3, borderSkipped: false }]
-    },
-    options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ x:{grid:{display:false},ticks:{color:tc,font:{size:9},maxTicksLimit:10}}, y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>v+'%'}} } }
+    type:'bar',
+    data:{ labels:monthly.map(d=>d.label), datasets:[{ data:monthly.map(d=>parseFloat(d.pct.toFixed(3))), backgroundColor:monthly.map(d=>d.pct>=0?'rgba(16,185,129,.65)':'rgba(239,68,68,.65)'), borderRadius:3, borderSkipped:false }] },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ x:{grid:{display:false},ticks:{color:tc,font:{size:9},maxTicksLimit:12}}, y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>v.toFixed(2)+'%'}} } }
   });
-}
 
-function destroyChart(id) {
-  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+  const diasRecentes = raw.filter(r => r.taxa > 0).slice(-90);
+  destroyChart('dailyChart');
+  charts['dailyChart'] = new Chart(document.getElementById('dailyChart'), {
+    type:'line',
+    data:{ labels:diasRecentes.map(r=>r.data||''), datasets:[{ data:diasRecentes.map(r=>(r.taxa*100).toFixed(5)), borderColor:'#f59e0b', borderWidth:1.5, pointRadius:0, backgroundColor:'rgba(245,158,11,.07)', fill:true, tension:.3 }] },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label,label:i=>(parseFloat(i.raw)).toFixed(4)+'%'}}}, scales:{ x:{display:false}, y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>parseFloat(v).toFixed(3)+'%'}} } }
+  });
 }
 
 function buildHist(p, monthly, gc, tc) {
-  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const gcl = gc || (isDark?'rgba(255,255,255,.07)':'rgba(0,0,0,.06)');
-  const tcl = tc || (isDark?'#aaa':'#666');
+  const isDark = window.matchMedia('(prefers-color-scheme:dark)').matches;
+  const g = gc||(isDark?'rgba(255,255,255,.07)':'rgba(0,0,0,.06)');
+  const t = tc||(isDark?'#999':'#666');
   const data = p==='all' ? monthly : monthly.filter(d=>String(d.ano)===p);
   destroyChart('histChart');
   charts['histChart'] = new Chart(document.getElementById('histChart'), {
-    type: 'line',
-    data: {
-      labels: data.map(d=>d.label),
-      datasets: [{
-        label:'Saldo Líquido', data: data.map(d=>d.saldoLiq),
-        borderColor:'#10b981', backgroundColor:'rgba(16,185,129,.08)',
-        fill:true, tension:.4, pointRadius:3, borderWidth:2, pointBackgroundColor:'#10b981'
-      }]
-    },
-    options: {
-      responsive:true, maintainAspectRatio:false,
-      plugins:{legend:{display:false}},
-      scales:{
-        x:{grid:{display:false},ticks:{color:tcl,font:{size:10},maxTicksLimit:10}},
-        y:{grid:{color:gcl},ticks:{color:tcl,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(0)+'k'}}
-      }
-    }
+    type:'line',
+    data:{ labels:data.map(d=>d.label), datasets:[{ label:'Saldo Líquido', data:data.map(d=>d.saldoLiq), borderColor:'#10b981', backgroundColor:'rgba(16,185,129,.09)', fill:true, tension:.4, pointRadius:3, borderWidth:2, pointBackgroundColor:'#10b981' }] },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ x:{grid:{display:false},ticks:{color:t,font:{size:10},maxTicksLimit:12}}, y:{grid:{color:g},ticks:{color:t,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(0)+'k'}} } }
   });
 }
 
+function destroyChart(id) { if(charts[id]){charts[id].destroy();delete charts[id];} }
+
+// ── FIREBASE ──────────────────────────────────────────────────────────
 async function saveToFirebase(rawData) {
   const ref = doc(db, 'investimentos', 'dashboard');
   await setDoc(ref, { raw: rawData, updatedAt: Date.now() });
 }
 
-async function loadFromFirebase() {
-  const ref = doc(db, 'investimentos', 'dashboard');
-  const snap = await getDoc(ref);
-  if (snap.exists()) {
-    const d = snap.data();
-    renderDashboard(d.raw, d.updatedAt);
-  }
-}
-
-// Listener em tempo real para outros dispositivos
 function subscribeRealtime() {
   const ref = doc(db, 'investimentos', 'dashboard');
   onSnapshot(ref, snap => {
     if (snap.exists()) {
       const d = snap.data();
       renderDashboard(d.raw, d.updatedAt);
+    } else {
+      setStatus('Nenhum dado encontrado. Faça o upload da planilha.');
     }
+  }, err => {
+    setStatus('Erro Firebase: ' + err.message + ' — verifique se o Firestore está habilitado.');
   });
 }
 
+function setStatus(msg) { const el = document.getElementById('upload-status'); if(el) el.textContent = msg; }
+
+// ── UPLOAD ────────────────────────────────────────────────────────────
 window.handleFile = async function(e) {
   const file = e.target.files[0];
   if (!file) return;
-  document.getElementById('upload-status').textContent = 'Lendo arquivo...';
+  setStatus('Lendo arquivo...');
   const reader = new FileReader();
   reader.onload = async function(ev) {
     try {
-      let rawData;
-      if (file.name.endsWith('.csv')) {
-        const text = ev.target.result;
-        const rows = text.split('\n').map(l => l.split(/[,;|\t]/));
-        rawData = parseRows(rows);
-      } else {
-        const wb = XLSX.read(ev.target.result, { type: 'binary' });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
-        rawData = parseRows(rows);
-      }
+      const wb = XLSX.read(ev.target.result, { type:'binary', cellDates:false });
+      let rawData = parseRicardoSheet(wb);
+      if (!rawData) rawData = parseGeneric(wb);
       if (!rawData || rawData.length === 0) {
-        document.getElementById('upload-status').textContent = 'Erro: não foi possível identificar os dados. Verifique as colunas da planilha.';
+        setStatus('Erro: não foi possível identificar os dados. Verifique se a planilha contém as colunas: Mês, Ano, Taxa, Financeiro, Acumulado.');
         return;
       }
-      document.getElementById('upload-status').textContent = 'Salvando na nuvem...';
+      setStatus(`Salvando ${rawData.length} registros na nuvem...`);
       await saveToFirebase(rawData);
-      document.getElementById('upload-status').textContent = 'Atualizado com sucesso!';
+      setStatus('✓ Planilha atualizada com sucesso! Todos os dispositivos serão atualizados.');
     } catch(err) {
-      document.getElementById('upload-status').textContent = 'Erro: ' + err.message;
+      setStatus('Erro: ' + err.message);
     }
   };
-  if (file.name.endsWith('.csv')) reader.readAsText(file);
-  else reader.readAsBinaryString(file);
+  reader.readAsBinaryString(file);
 };
 
 window.handleDrop = function(e) {
   e.preventDefault();
   document.getElementById('dropzone').classList.remove('drag');
   const file = e.dataTransfer.files[0];
-  if (file) { document.getElementById('fileInput').files = e.dataTransfer.files; window.handleFile({target:{files:[file]}}); }
+  if (file) window.handleFile({ target: { files: [file] } });
 };
 
-// Init
 document.addEventListener('DOMContentLoaded', () => {
+  setStatus('Conectando ao servidor...');
   subscribeRealtime();
 });
 </script>
 <style>
-  :root {
-    --bg: #f8f9fa; --surface: #ffffff; --surface2: #f1f5f9;
-    --border: #e2e8f0; --text: #1e293b; --muted: #64748b;
-    --green: #059669; --red: #dc2626; --amber: #d97706;
-    --blue: #2563eb; --accent: #0f172a;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#0f172a; --surface:#1e293b; --surface2:#0f172a; --border:#334155; --text:#f1f5f9; --muted:#94a3b8; --green:#34d399; --red:#f87171; --amber:#fbbf24; --blue:#60a5fa; --accent:#f8fafc; }
-  }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
-  
-  /* Upload */
-  #upload-section { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:2rem; flex-direction:column; gap:1.5rem; }
-  .upload-box { background:var(--surface); border:1.5px dashed var(--border); border-radius:16px; padding:3rem 2.5rem; text-align:center; max-width:520px; width:100%; cursor:pointer; transition:border-color .2s; }
-  .upload-box.drag { border-color:var(--blue); background:rgba(37,99,235,.04); }
-  .upload-box h2 { font-size:18px; font-weight:600; margin-bottom:.5rem; }
-  .upload-box p { font-size:13px; color:var(--muted); margin-bottom:1.5rem; }
-  .upload-box input { display:none; }
-  .btn { display:inline-flex; align-items:center; gap:6px; padding:9px 20px; border-radius:8px; border:1px solid var(--border); background:var(--surface2); color:var(--text); font-size:13px; cursor:pointer; font-weight:500; }
-  .btn:hover { background:var(--border); }
-  .upload-status { font-size:13px; color:var(--muted); text-align:center; }
-  .format-hint { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1rem 1.25rem; max-width:520px; width:100%; }
-  .format-hint p { font-size:12px; font-weight:600; color:var(--muted); margin-bottom:.5rem; }
-  .format-hint code { font-size:11px; color:var(--muted); background:var(--surface2); padding:2px 5px; border-radius:4px; }
+:root{ --bg:#f1f5f9;--surf:#ffffff;--surf2:#f8fafc;--bdr:#e2e8f0;--txt:#0f172a;--muted:#64748b;--green:#059669;--red:#dc2626;--amber:#b45309;--blue:#2563eb; }
+@media(prefers-color-scheme:dark){ :root{--bg:#0f172a;--surf:#1e293b;--surf2:#0f172a;--bdr:#334155;--txt:#f1f5f9;--muted:#94a3b8;--green:#34d399;--red:#f87171;--amber:#fbbf24;--blue:#60a5fa;} }
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--txt);min-height:100vh}
 
-  /* Dashboard */
-  #dashboard-section { display:none; padding:1.25rem; max-width:1280px; margin:0 auto; }
-  .header { display:flex; align-items:center; justify-content:space-between; margin-bottom:1.25rem; flex-wrap:wrap; gap:.75rem; }
-  .header h1 { font-size:20px; font-weight:700; color:var(--text); }
-  .header .sub { font-size:12px; color:var(--muted); margin-top:3px; }
-  .btn-upload-new { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text); font-size:12px; cursor:pointer; font-weight:500; }
-  .btn-upload-new:hover { background:var(--surface2); }
-  
-  /* Metrics */
-  .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-bottom:1.25rem; }
-  .mc { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:.9rem 1rem; }
-  .mc.bruto { border-left:3px solid #94a3b8; }
-  .ml { font-size:11px; color:var(--muted); margin-bottom:4px; text-transform:uppercase; letter-spacing:.04em; font-weight:500; }
-  .mv { font-size:20px; font-weight:700; color:var(--text); }
-  .ms { font-size:11px; margin-top:3px; }
-  .green { color:var(--green); } .red { color:var(--red); } .amber { color:var(--amber); } .muted { color:var(--muted); }
-  
-  /* Cards */
-  .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1.1rem 1.25rem; margin-bottom:1rem; }
-  .card-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; flex-wrap:wrap; gap:.5rem; }
-  .card-title { font-size:13px; font-weight:600; color:var(--text); margin-bottom:10px; }
-  .charts-row { display:grid; grid-template-columns:1.6fr 1fr; gap:1rem; margin-bottom:0; }
-  .charts-row .wide { grid-column:auto; }
-  @media(max-width:768px) { .charts-row { grid-template-columns:1fr; } }
-  .cw { position:relative; height:220px; }
-  .cw.sm { position:relative; height:170px; }
-  
-  /* Tabs */
-  .tabs { display:flex; gap:4px; }
-  .tab { font-size:11px; padding:3px 10px; border-radius:20px; cursor:pointer; background:transparent; border:1px solid var(--border); color:var(--muted); font-weight:500; }
-  .tab.active { background:var(--surface2); color:var(--text); border-color:var(--text); }
-  
-  /* Table */
-  .table-wrap { overflow-x:auto; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  thead tr { border-bottom:2px solid var(--border); }
-  th { padding:8px 10px; text-align:left; font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-  td { padding:9px 10px; border-bottom:1px solid var(--border); }
-  tr:last-child td { border-bottom:none; }
-  tr:hover td { background:var(--surface2); }
-  .badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:20px; }
-  .bp { background:#dcfce7; color:#166534; }
-  .bn { background:#fee2e2; color:#991b1b; }
-  @media(prefers-color-scheme:dark){ .bp{background:#14532d;color:#86efac} .bn{background:#7f1d1d;color:#fca5a5} }
+/* ── UPLOAD ── */
+#upload-section{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1.5rem;flex-direction:column;gap:1.25rem}
+.upload-box{background:var(--surf);border:1.5px dashed var(--bdr);border-radius:16px;padding:2.5rem 2rem;text-align:center;max-width:500px;width:100%;cursor:pointer;transition:border-color .2s,background .2s}
+.upload-box.drag{border-color:var(--blue);background:rgba(37,99,235,.04)}
+.upload-box h2{font-size:17px;font-weight:700;margin-bottom:.4rem}
+.upload-box p{font-size:13px;color:var(--muted);margin-bottom:1.25rem;line-height:1.5}
+.upload-box input{display:none}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 20px;border-radius:8px;border:1px solid var(--bdr);background:var(--surf2);color:var(--txt);font-size:13px;cursor:pointer;font-weight:500;transition:background .15s}
+.btn:hover{background:var(--bdr)}
+#upload-status{font-size:13px;color:var(--muted);text-align:center;max-width:500px}
+.fmt-hint{background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:1rem 1.25rem;max-width:500px;width:100%}
+.fmt-hint p{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:.5rem}
+.fmt-hint code{font-size:11px;color:var(--muted);background:var(--surf2);padding:2px 6px;border-radius:4px;display:inline-block;margin:2px 0}
+
+/* ── DASHBOARD ── */
+#dashboard-section{display:none;padding:1.25rem;max-width:1300px;margin:0 auto}
+.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:.75rem}
+.header h1{font-size:20px;font-weight:700}
+.header .sub{font-size:11px;color:var(--muted);margin-top:3px}
+.btn-outline{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:8px;border:1px solid var(--bdr);background:var(--surf);color:var(--txt);font-size:12px;cursor:pointer;font-weight:500}
+.btn-outline:hover{background:var(--surf2)}
+
+/* ── METRICS ── */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px;margin-bottom:1.25rem}
+.mc{background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:.9rem 1rem}
+.bruto-card{border-left:3px solid #94a3b8}
+.ml{font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.mv{font-size:19px;font-weight:700}
+.ms{font-size:11px;margin-top:3px}
+.green{color:var(--green)}.red{color:var(--red)}.amber{color:var(--amber)}.muted{color:var(--muted)}.neutral{color:var(--txt)}
+
+/* ── CARDS & CHARTS ── */
+.card{background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:1.1rem 1.25rem;margin-bottom:1rem}
+.card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:.5rem}
+.card-title{font-size:13px;font-weight:600;color:var(--txt);margin-bottom:10px}
+.charts-row{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem;margin-bottom:0}
+.span2{grid-column:1/-1}
+.cw{position:relative}.h240{height:240px}.h220{height:200px}.h140{height:140px}
+@media(max-width:700px){.charts-row{grid-template-columns:1fr}.span2{grid-column:auto}}
+
+/* ── TABS ── */
+.tabs{display:flex;gap:4px}
+.tab{font-size:11px;padding:3px 10px;border-radius:20px;cursor:pointer;background:transparent;border:1px solid var(--bdr);color:var(--muted);font-weight:500}
+.tab.active{background:var(--surf2);color:var(--txt);border-color:var(--txt)}
+
+/* ── TABLE ── */
+.table-wrap{overflow-x:auto;max-height:420px;overflow-y:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead{position:sticky;top:0;background:var(--surf);z-index:1}
+thead tr{border-bottom:2px solid var(--bdr)}
+th{padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+td{padding:8px 10px;border-bottom:1px solid var(--bdr)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--surf2)}
+.badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px}
+.bp{background:#dcfce7;color:#166534}.bn{background:#fee2e2;color:#991b1b}
+@media(prefers-color-scheme:dark){.bp{background:#14532d;color:#86efac}.bn{background:#7f1d1d;color:#fca5a5}}
+
+.fn{font-size:11px;color:var(--muted);text-align:center;padding:.75rem 0 .25rem;display:flex;align-items:center;justify-content:center;gap:5px}
 </style>
 </head>
 <body>
@@ -443,20 +455,20 @@ document.addEventListener('DOMContentLoaded', () => {
     ondragover="event.preventDefault();this.classList.add('drag')"
     ondragleave="this.classList.remove('drag')"
     ondrop="handleDrop(event)">
-    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="1.5" style="margin-bottom:1rem"><path d="M9 17H7A5 5 0 017 7h.5M15 17h2A5 5 0 0017 7h-.5M12 12v9M9 18l3 3 3-3"/><path d="M12 3v9"/></svg>
+    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="1.5" style="margin-bottom:.9rem" aria-hidden="true"><path d="M9 17H7A5 5 0 017 7h.5M15 17h2A5 5 0 0017 7h-.5M12 12v9M9 18l3 3 3-3"/></svg>
     <h2>Dashboard de Investimentos</h2>
     <p>Arraste sua planilha aqui ou clique para selecionar.<br>Após o upload, todos os dispositivos são atualizados automaticamente.</p>
-    <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" onchange="handleFile(event)">
+    <input type="file" id="fileInput" accept=".xlsx,.xls" onchange="handleFile(event)">
     <button class="btn" onclick="document.getElementById('fileInput').click()">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
       Escolher arquivo
     </button>
   </div>
-  <p class="upload-status" id="upload-status">Verificando dados na nuvem...</p>
-  <div class="format-hint">
-    <p>Formato da planilha — colunas detectadas automaticamente:</p>
-    <code>Mês · Ano · Taxa (%) · Financeiro (R$) · Acumulado/Saldo</code><br><br>
-    <code>Colunas obrigatórias: qualquer coluna de saldo/acumulado</code>
+  <p id="upload-status">Conectando ao servidor...</p>
+  <div class="fmt-hint">
+    <p>Planilha suportada: Ricardo_Saturnino.xlsx</p>
+    <code>Aba: Resultados</code>
+    <code>Colunas: Mês · Ano · Data · Δ% Diário · Financeiro Diário · Acumulado Bruto</code>
   </div>
 </div>
 
