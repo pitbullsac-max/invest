@@ -8,7 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCCqDt2L3lSEbKfbByigXpIDrMxHgNIxtA",
@@ -20,160 +20,168 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-const meses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-const DESCONTO = 0.20;
+const db  = getFirestore(app);
+
+const MESES_LABEL = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 let charts = {};
 
-function fmt(v){ return v.toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:2,maximumFractionDigits:2}); }
-function fmtP(v){ return (v>=0?'+':'')+v.toFixed(2)+'%'; }
+function fmt(v)  { return Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtP(v) { return (v>=0?'+':'')+Number(v).toFixed(2)+'%'; }
+function n(v)    { return (typeof v === 'number' && isFinite(v)) ? v : 0; }
 
-// ── PARSER ESPECÍFICO PARA A PLANILHA RICARDO SATURNINO ──────────────
-// Estrutura: header na linha 24 (índice), dados a partir da linha 25
-// col 0 = Mês, col 1 = Ano, col 5 = Data, col 7 = Taxa Δ%, col 9 = Financeiro diário, col 11 = Acumulado bruto
-function parseRicardoSheet(wb) {
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+// ════════════════════════════════════════════════════════════════════
+//  PARSER — lê a planilha Ricardo Saturnino e extrai:
+//   • dados diários  (tabela "Resultados saldo bruto")
+//   • aportes/baixas
+//   • resumo mensal  (bruto, desconto IR, líquido, acumulado líquido)
+// ════════════════════════════════════════════════════════════════════
+function parseSheet(wb) {
+  const ws   = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null, raw:true });
 
-  // Encontra linha de dados: primeira linha onde col 0 é número (mês) e col 11 tem saldo
+  // ── 1. DADOS DIÁRIOS ─────────────────────────────────────────────
+  // Estrutura confirmada: col0=Mês col1=Ano col5=Data col7=Taxa col9=Financeiro col11=Acumulado
   let startRow = -1;
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    if (r[0] && typeof r[0] === 'number' && r[0] >= 1 && r[0] <= 12 &&
-        r[1] && typeof r[1] === 'number' && r[1] >= 2020 &&
-        r[11] != null && typeof r[11] === 'number' && r[11] > 1000) {
-      startRow = i;
-      break;
-    }
+    if (typeof r[0]==='number' && r[0]>=1 && r[0]<=12 &&
+        typeof r[1]==='number' && r[1]>=2020 &&
+        typeof r[11]==='number' && r[11]>1000) { startRow = i; break; }
   }
   if (startRow < 0) return null;
 
-  const result = [];
+  const daily = [];
   for (let i = startRow; i < rows.length; i++) {
     const r = rows[i];
-    const mes = r[0], ano = r[1], saldo = r[11];
-    if (!mes || !ano || saldo == null) continue;
-    if (typeof mes !== 'number' || typeof ano !== 'number') continue;
-    if (saldo <= 0) continue;
-
-    // Data: col 5 pode ser serial Excel ou já Date
-    let data = '';
+    if (typeof r[0]!=='number' || typeof r[11]!=='number' || r[11]<=0) continue;
+    let dataStr = '';
     if (r[5]) {
-      if (typeof r[5] === 'number') {
-        // serial Excel → date
-        const d = new Date(Math.round((r[5] - 25569) * 86400 * 1000));
-        data = d.toISOString().split('T')[0];
-      } else if (r[5] instanceof Date) {
-        data = r[5].toISOString().split('T')[0];
-      } else {
-        data = String(r[5]).split('T')[0];
-      }
+      if (typeof r[5]==='number') {
+        const d = new Date(Math.round((r[5]-25569)*86400*1000));
+        dataStr = d.toISOString().split('T')[0];
+      } else if (r[5] instanceof Date) { dataStr = r[5].toISOString().split('T')[0]; }
+      else { dataStr = String(r[5]).split('T')[0]; }
     }
-
-    const taxa = (typeof r[7] === 'number') ? r[7] : 0;
-    const financeiro = (typeof r[9] === 'number') ? r[9] : 0;
-    const obs = r[12] ? String(r[12]) : '';
-
-    result.push({ mes: Math.round(mes), ano: Math.round(ano), data, taxa, financeiro, saldo, obs });
+    daily.push({
+      mes: Math.round(r[0]), ano: Math.round(r[1]),
+      data: dataStr,
+      taxa:       n(r[7]),
+      financeiro: n(r[9]),
+      saldo:      n(r[11]),
+      obs:        r[12] ? String(r[12]) : ''
+    });
   }
-  return result.length > 10 ? result : null;
-}
 
-// ── PARSER GENÉRICO (fallback) ────────────────────────────────────────
-function parseGeneric(wb) {
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-  if (!rows || rows.length < 2) return null;
-  const headers = rows[0].map(h => (h||'').toString().toLowerCase().trim());
-  const find = (...opts) => headers.findIndex(h => opts.some(o => h.includes(o)));
-  const iMes = find('mes','mês');
-  const iAno = find('ano','year');
-  const iTaxa = find('taxa','delta','δ','%');
-  const iRend = find('financeiro','rend');
-  const iSaldo = find('acumulado','saldo','atual');
-  if (iSaldo < 0) return null;
-  return rows.slice(1).filter(r => r[iSaldo] > 0).map(r => ({
-    mes: Number(r[iMes])||0, ano: Number(r[iAno])||0, taxa: Number(r[iTaxa])||0,
-    financeiro: Number(r[iRend])||0, saldo: Number(r[iSaldo])||0, obs: ''
-  })).filter(r => r.saldo > 0);
-}
-
-// ── CALC MENSAIS ──────────────────────────────────────────────────────
-function getMonthly(raw) {
-  const byKey = {};
-  raw.forEach(r => {
-    const k = `${r.mes}-${r.ano}`;
-    if (!byKey[k]) byKey[k] = { mes: r.mes, ano: r.ano, inicio: r.saldo, fim: r.saldo, rendSum: 0, label: `${meses[r.mes-1]}/${String(r.ano).slice(2)}` };
-    byKey[k].fim = r.saldo;
-    byKey[k].rendSum += r.financeiro || 0;
-  });
-  const keys = Object.keys(byKey);
-  return keys.map((k, i) => {
-    const d = byKey[k];
-    const prev = i > 0 ? byKey[keys[i-1]].fim : d.inicio;
-    const rendBruto = d.fim - prev;
-    const pct = prev > 0 ? (rendBruto / prev) * 100 : 0;
-    return { ...d, saldo: d.fim, saldoLiq: d.fim * (1-DESCONTO), rendBruto, rendLiq: rendBruto * (1-DESCONTO), pct };
-  });
-}
-
-function calcAportes(raw) {
-  // Detecta aportes pelo texto na coluna obs ou por saltos grandes sem taxa
-  let total = 0;
-  raw.forEach((r, i) => {
-    const obsLower = (r.obs||'').toLowerCase();
-    if (obsLower.includes('aporte')) {
-      // extrai valor do texto ex: "1º Aporte - R$ 55.000,00"
-      const match = obsLower.match(/r\$\s*([\d.,]+)/);
-      if (match) {
-        const val = parseFloat(match[1].replace(/\./g,'').replace(',','.'));
-        if (!isNaN(val)) total += val;
-      } else if (i === 0) {
-        total += r.saldo;
+  // ── 2. APORTES / BAIXAS ──────────────────────────────────────────
+  // Linha 6 (índice): cols 15-46 trazem os valores de aporte por período
+  // Detectamos direto pelo texto na col 12 dos dados diários
+  const aportes = [];
+  daily.forEach(d => {
+    if (d.obs.toLowerCase().includes('aporte')) {
+      const m = d.obs.match(/r\$\s*([\d.,]+)/i);
+      if (m) {
+        const val = parseFloat(m[1].replace(/\./g,'').replace(',','.'));
+        if (!isNaN(val) && val > 0) aportes.push({ data: d.data, valor: val, obs: d.obs });
       }
     }
   });
-  // fallback: se não achou texto, soma primeiro saldo + saltos grandes sem taxa
-  if (total === 0) {
-    total = raw[0]?.saldo || 0;
-    for (let i = 1; i < raw.length; i++) {
-      if (raw[i].taxa === 0 && raw[i].financeiro === 0) {
-        const delta = raw[i].saldo - raw[i-1].saldo;
-        if (delta > 500) total += delta;
-      }
-    }
+  const totalAportado = aportes.reduce((s,a) => s+a.valor, 0) || daily[0]?.saldo || 0;
+
+  // ── 3. RESUMO MENSAL — lê diretamente as linhas corretas da planilha ──
+  // Mapeamento confirmado:
+  //   Row 13 = Bruto Mensal    Row 14 = Acumulado Bruto
+  //   Row 20 = Desconto IR     Row 22 = Mensal Líquido    Row 23 = Acumulado Líquido
+  //
+  // Colunas por mês:
+  //   Jul/24-Dez/24  → cols 15-20
+  //   Jan/25-Dez/25  → cols 22-33
+  //   Jan/26-Dez/26  → cols 35-46
+  const COL_MAP = [
+    {label:'Jul/24', mes:7,  ano:2024, col:15},
+    {label:'Ago/24', mes:8,  ano:2024, col:16},
+    {label:'Set/24', mes:9,  ano:2024, col:17},
+    {label:'Out/24', mes:10, ano:2024, col:18},
+    {label:'Nov/24', mes:11, ano:2024, col:19},
+    {label:'Dez/24', mes:12, ano:2024, col:20},
+    {label:'Jan/25', mes:1,  ano:2025, col:22},
+    {label:'Fev/25', mes:2,  ano:2025, col:23},
+    {label:'Mar/25', mes:3,  ano:2025, col:24},
+    {label:'Abr/25', mes:4,  ano:2025, col:25},
+    {label:'Mai/25', mes:5,  ano:2025, col:26},
+    {label:'Jun/25', mes:6,  ano:2025, col:27},
+    {label:'Jul/25', mes:7,  ano:2025, col:28},
+    {label:'Ago/25', mes:8,  ano:2025, col:29},
+    {label:'Set/25', mes:9,  ano:2025, col:30},
+    {label:'Out/25', mes:10, ano:2025, col:31},
+    {label:'Nov/25', mes:11, ano:2025, col:32},
+    {label:'Dez/25', mes:12, ano:2025, col:33},
+    {label:'Jan/26', mes:1,  ano:2026, col:35},
+    {label:'Fev/26', mes:2,  ano:2026, col:36},
+    {label:'Mar/26', mes:3,  ano:2026, col:37},
+    {label:'Abr/26', mes:4,  ano:2026, col:38},
+    {label:'Mai/26', mes:5,  ano:2026, col:39},
+    {label:'Jun/26', mes:6,  ano:2026, col:40},
+    {label:'Jul/26', mes:7,  ano:2026, col:41},
+    {label:'Ago/26', mes:8,  ano:2026, col:42},
+    {label:'Set/26', mes:9,  ano:2026, col:43},
+    {label:'Out/26', mes:10, ano:2026, col:44},
+    {label:'Nov/26', mes:11, ano:2026, col:45},
+    {label:'Dez/26', mes:12, ano:2026, col:46},
+  ];
+
+  const monthly = [];
+  for (const m of COL_MAP) {
+    const brutoMen  = n(rows[13]?.[m.col]);
+    const acumBruto = n(rows[14]?.[m.col]);
+    const desconto  = n(rows[20]?.[m.col]);   // valor negativo na planilha
+    const liqMen    = n(rows[22]?.[m.col]);
+    const acumLiq   = n(rows[23]?.[m.col]);
+    // só inclui meses que têm dados reais
+    if (acumBruto <= 0 && acumLiq <= 0) continue;
+    const pct = acumBruto > 0 && brutoMen > 0
+      ? (brutoMen / (acumBruto - brutoMen)) * 100
+      : 0;
+    monthly.push({ ...m, brutoMen, acumBruto, desconto: Math.abs(desconto), liqMen, acumLiq, pct });
   }
-  return total;
+
+  return { daily, monthly, totalAportado, aportes };
 }
 
-// ── RENDER ────────────────────────────────────────────────────────────
-function renderDashboard(raw, uploadedAt) {
-  const monthly = getMonthly(raw);
-  const saldoBruto = raw.filter(r => r.saldo > 0).slice(-1)[0].saldo;
-  const saldoLiq = saldoBruto * (1 - DESCONTO);
-  const totalAportado = calcAportes(raw);
-  const lucroLiq = saldoLiq - totalAportado;
-  const pctLiq = totalAportado > 0 ? (lucroLiq / totalAportado) * 100 : 0;
+// ════════════════════════════════════════════════════════════════════
+//  RENDER
+// ════════════════════════════════════════════════════════════════════
+function renderDashboard(payload, uploadedAt) {
+  const { daily, monthly, totalAportado, aportes } = payload;
 
-  const diasUteis = raw.filter(r => r.taxa > 0);
-  const semana = diasUteis.slice(-5);
-  const rendSemBruto = semana.reduce((s,r) => s + r.financeiro, 0);
-  const rendSemLiq = rendSemBruto * (1 - DESCONTO);
-  const saldoBaseS = semana.length > 0 ? (semana[0].saldo - semana[0].financeiro) : saldoBruto;
-  const pctSem = saldoBaseS > 0 ? (rendSemLiq / (saldoBaseS*(1-DESCONTO))) * 100 : 0;
+  const ultimo       = monthly[monthly.length - 1];
+  const saldoBruto   = ultimo.acumBruto;
+  const saldoLiq     = ultimo.acumLiq;
+  const lucroLiq     = saldoLiq - totalAportado;
+  const pctLiqTotal  = totalAportado > 0 ? (lucroLiq / totalAportado) * 100 : 0;
 
-  const ultMes = monthly[monthly.length - 1];
-  const taxaMedia = diasUteis.length > 0 ? diasUteis.reduce((s,r) => s + r.taxa, 0) / diasUteis.length * 100 : 0;
-  const upDate = uploadedAt ? new Date(uploadedAt).toLocaleString('pt-BR') : '';
+  // Semana: últimos 5 dias úteis com taxa > 0
+  const diasUteis    = daily.filter(d => d.taxa > 0);
+  const semana       = diasUteis.slice(-5);
+  const rendSemBruto = semana.reduce((s,d) => s + d.financeiro, 0);
+  // IR proporcional da semana = desconto do mês atual / dias úteis do mês
+  const diasUteisUltMes = daily.filter(d => d.mes===ultimo.mes && d.ano===ultimo.ano && d.taxa>0).length || 1;
+  const irDia        = ultimo.desconto / diasUteisUltMes;
+  const rendSemLiq   = rendSemBruto - (irDia * semana.length);
+  const saldoIniSem  = semana.length > 0 ? semana[0].saldo - semana[0].financeiro : saldoBruto;
+  const pctSem       = saldoIniSem > 0 ? (rendSemLiq / saldoIniSem) * 100 : 0;
+
+  const taxaMedia    = diasUteis.length > 0 ? diasUteis.reduce((s,d)=>s+d.taxa,0)/diasUteis.length*100 : 0;
+  const upDate       = uploadedAt ? new Date(uploadedAt).toLocaleString('pt-BR') : '';
 
   document.getElementById('upload-section').style.display = 'none';
   const dash = document.getElementById('dashboard-section');
   dash.style.display = 'block';
+
   dash.innerHTML = `
     <div class="header">
       <div>
         <h1>Dashboard de Investimentos</h1>
-        <p class="sub">Atualizado: ${upDate} &nbsp;·&nbsp; ${raw.length} dias &nbsp;·&nbsp; ${monthly.length} meses</p>
+        <p class="sub">Atualizado: ${upDate} &nbsp;·&nbsp; ${daily.length} dias &nbsp;·&nbsp; ${monthly.length} meses</p>
       </div>
       <button class="btn-outline" id="btnNovaPlani">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -185,7 +193,7 @@ function renderDashboard(raw, uploadedAt) {
       <div class="mc bruto-card">
         <div class="ml">Saldo bruto</div>
         <div class="mv neutral">${fmt(saldoBruto)}</div>
-        <div class="ms muted">antes do DARF (20%)</div>
+        <div class="ms muted">antes do IR</div>
       </div>
       <div class="mc">
         <div class="ml">Saldo líquido</div>
@@ -195,7 +203,7 @@ function renderDashboard(raw, uploadedAt) {
       <div class="mc">
         <div class="ml">Lucro líquido total</div>
         <div class="mv green">${fmt(lucroLiq)}</div>
-        <div class="ms green">${fmtP(pctLiq)} acumulado</div>
+        <div class="ms green">${fmtP(pctLiqTotal)} sobre aportado</div>
       </div>
       <div class="mc">
         <div class="ml">Semana (líq.)</div>
@@ -203,9 +211,9 @@ function renderDashboard(raw, uploadedAt) {
         <div class="ms ${pctSem>=0?'green':'red'}">${fmtP(pctSem)}</div>
       </div>
       <div class="mc">
-        <div class="ml">${ultMes.label} (líq.)</div>
-        <div class="mv ${ultMes.rendLiq>=0?'green':'red'}">${fmt(ultMes.rendLiq)}</div>
-        <div class="ms ${ultMes.pct>=0?'green':'red'}">${fmtP(ultMes.pct)}</div>
+        <div class="ml">${ultimo.label} líq.</div>
+        <div class="mv ${ultimo.liqMen>=0?'green':'red'}">${fmt(ultimo.liqMen)}</div>
+        <div class="ms muted">IR: ${fmt(ultimo.desconto)}</div>
       </div>
       <div class="mc">
         <div class="ml">Taxa média/dia</div>
@@ -217,7 +225,7 @@ function renderDashboard(raw, uploadedAt) {
     <div class="charts-row">
       <div class="card span2">
         <div class="card-header">
-          <span class="card-title">Evolução do saldo líquido</span>
+          <span class="card-title">Evolução do acumulado líquido</span>
           <div class="tabs" id="tabsHist">
             <button class="tab active" data-p="all">Tudo</button>
             <button class="tab" data-p="2024">2024</button>
@@ -225,35 +233,59 @@ function renderDashboard(raw, uploadedAt) {
             <button class="tab" data-p="2026">2026</button>
           </div>
         </div>
-        <div class="cw h240"><canvas id="histChart" role="img" aria-label="Evolução do saldo líquido mensal"></canvas></div>
+        <div class="cw h240"><canvas id="histChart" aria-label="Acumulado líquido mensal"></canvas></div>
       </div>
       <div class="card">
         <div class="card-title">Rendimento mensal líquido (R$)</div>
-        <div class="cw h220"><canvas id="rendChart" role="img" aria-label="Rendimento mensal líquido em reais"></canvas></div>
+        <div class="cw h200"><canvas id="rendChart" aria-label="Rendimento mensal líquido em reais"></canvas></div>
       </div>
       <div class="card">
-        <div class="card-title">Rendimento mensal líquido (%)</div>
-        <div class="cw h220"><canvas id="pctChart" role="img" aria-label="Percentual de rendimento mensal líquido"></canvas></div>
+        <div class="card-title">Desconto IR mensal (R$)</div>
+        <div class="cw h200"><canvas id="irChart" aria-label="Desconto IR mensal"></canvas></div>
       </div>
     </div>
 
     <div class="card" style="margin-bottom:1rem">
       <div class="card-title">Taxa diária (% ao dia) — últimos 90 dias úteis</div>
-      <div class="cw h140"><canvas id="dailyChart" role="img" aria-label="Taxa de rendimento diário"></canvas></div>
+      <div class="cw h130"><canvas id="dailyChart" aria-label="Taxa de rendimento diário"></canvas></div>
     </div>
 
     <div class="card">
-      <div class="card-title">Histórico mensal detalhado</div>
+      <div class="card-title">Histórico mensal completo</div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Mês/Ano</th><th>Saldo Bruto</th><th>Saldo Líquido</th><th>Rend. Líq. R$</th><th>Rend. %</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Mês</th>
+              <th>Rend. Bruto</th>
+              <th>Acum. Bruto</th>
+              <th>Desconto IR</th>
+              <th>Rend. Líq.</th>
+              <th>Acum. Líq.</th>
+              <th>%</th>
+            </tr>
+          </thead>
           <tbody id="tBody"></tbody>
         </table>
       </div>
     </div>
+
+    <div class="card" style="margin-bottom:1rem">
+      <div class="card-title">Aportes realizados</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Data</th><th>Valor</th><th>Observação</th></tr></thead>
+          <tbody>
+            ${aportes.map(a=>`<tr><td>${a.data}</td><td class="green">${fmt(a.valor)}</td><td class="muted">${a.obs}</td></tr>`).join('')}
+            <tr style="font-weight:700"><td>Total aportado</td><td class="green">${fmt(totalAportado)}</td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <p class="fn">
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-      Dados sincronizados via Firebase · atualizados em tempo real em todos os dispositivos
+      Dados sincronizados via Firebase · valores diretamente da sua planilha
     </p>
   `;
 
@@ -270,11 +302,19 @@ function renderDashboard(raw, uploadedAt) {
     });
   });
 
-  // Tabela
+  // Tabela mensal
   const tbody = document.getElementById('tBody');
   [...monthly].reverse().forEach(d => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td><strong>${d.label}</strong></td><td class="muted">${fmt(d.saldo)}</td><td class="green">${fmt(d.saldoLiq)}</td><td class="${d.rendLiq>=0?'green':'red'}">${fmt(d.rendLiq)}</td><td><span class="badge ${d.pct>=0?'bp':'bn'}">${fmtP(d.pct)}</span></td>`;
+    tr.innerHTML = `
+      <td><strong>${d.label}</strong></td>
+      <td class="muted">${fmt(d.brutoMen)}</td>
+      <td class="muted">${fmt(d.acumBruto)}</td>
+      <td class="red">-${fmt(d.desconto)}</td>
+      <td class="green">${fmt(d.liqMen)}</td>
+      <td class="green"><strong>${fmt(d.acumLiq)}</strong></td>
+      <td><span class="badge ${d.pct>=0?'bp':'bn'}">${fmtP(d.pct)}</span></td>
+    `;
     tbody.appendChild(tr);
   });
 
@@ -284,26 +324,48 @@ function renderDashboard(raw, uploadedAt) {
 
   buildHist('all', monthly, gc, tc);
 
+  // Rendimento mensal líquido
   destroyChart('rendChart');
   charts['rendChart'] = new Chart(document.getElementById('rendChart'), {
     type:'bar',
-    data:{ labels:monthly.map(d=>d.label), datasets:[{ data:monthly.map(d=>d.rendLiq), backgroundColor:monthly.map(d=>d.rendLiq>=0?'rgba(16,185,129,.75)':'rgba(239,68,68,.75)'), borderRadius:3, borderSkipped:false }] },
-    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ x:{grid:{display:false},ticks:{color:tc,font:{size:9},maxTicksLimit:12}}, y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}} } }
+    data:{ labels:monthly.map(d=>d.label), datasets:[{
+      data:monthly.map(d=>d.liqMen),
+      backgroundColor:monthly.map(d=>d.liqMen>=0?'rgba(16,185,129,.75)':'rgba(239,68,68,.75)'),
+      borderRadius:3, borderSkipped:false
+    }]},
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
+      scales:{ x:{grid:{display:false},ticks:{color:tc,font:{size:9},maxTicksLimit:12}},
+               y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}} } }
   });
 
-  destroyChart('pctChart');
-  charts['pctChart'] = new Chart(document.getElementById('pctChart'), {
+  // Desconto IR mensal
+  destroyChart('irChart');
+  charts['irChart'] = new Chart(document.getElementById('irChart'), {
     type:'bar',
-    data:{ labels:monthly.map(d=>d.label), datasets:[{ data:monthly.map(d=>parseFloat(d.pct.toFixed(3))), backgroundColor:monthly.map(d=>d.pct>=0?'rgba(16,185,129,.65)':'rgba(239,68,68,.65)'), borderRadius:3, borderSkipped:false }] },
-    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ x:{grid:{display:false},ticks:{color:tc,font:{size:9},maxTicksLimit:12}}, y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>v.toFixed(2)+'%'}} } }
+    data:{ labels:monthly.map(d=>d.label), datasets:[{
+      data:monthly.map(d=>d.desconto),
+      backgroundColor:'rgba(239,68,68,.55)',
+      borderRadius:3, borderSkipped:false
+    }]},
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
+      scales:{ x:{grid:{display:false},ticks:{color:tc,font:{size:9},maxTicksLimit:12}},
+               y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}} } }
   });
 
-  const diasRecentes = raw.filter(r => r.taxa > 0).slice(-90);
+  // Taxa diária
+  const diasRecentes = daily.filter(d=>d.taxa>0).slice(-90);
   destroyChart('dailyChart');
   charts['dailyChart'] = new Chart(document.getElementById('dailyChart'), {
     type:'line',
-    data:{ labels:diasRecentes.map(r=>r.data||''), datasets:[{ data:diasRecentes.map(r=>(r.taxa*100).toFixed(5)), borderColor:'#f59e0b', borderWidth:1.5, pointRadius:0, backgroundColor:'rgba(245,158,11,.07)', fill:true, tension:.3 }] },
-    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label,label:i=>(parseFloat(i.raw)).toFixed(4)+'%'}}}, scales:{ x:{display:false}, y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>parseFloat(v).toFixed(3)+'%'}} } }
+    data:{ labels:diasRecentes.map(d=>d.data), datasets:[{
+      data:diasRecentes.map(d=>(d.taxa*100)),
+      borderColor:'#f59e0b', borderWidth:1.5, pointRadius:0,
+      backgroundColor:'rgba(245,158,11,.07)', fill:true, tension:.3
+    }]},
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
+      tooltip:{callbacks:{title:i=>i[0].label, label:i=>i.raw.toFixed(4)+'%'}}},
+      scales:{ x:{display:false},
+               y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>v.toFixed(3)+'%'}} } }
   });
 }
 
@@ -315,17 +377,24 @@ function buildHist(p, monthly, gc, tc) {
   destroyChart('histChart');
   charts['histChart'] = new Chart(document.getElementById('histChart'), {
     type:'line',
-    data:{ labels:data.map(d=>d.label), datasets:[{ label:'Saldo Líquido', data:data.map(d=>d.saldoLiq), borderColor:'#10b981', backgroundColor:'rgba(16,185,129,.09)', fill:true, tension:.4, pointRadius:3, borderWidth:2, pointBackgroundColor:'#10b981' }] },
-    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ x:{grid:{display:false},ticks:{color:t,font:{size:10},maxTicksLimit:12}}, y:{grid:{color:g},ticks:{color:t,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(0)+'k'}} } }
+    data:{ labels:data.map(d=>d.label), datasets:[{
+      label:'Acumulado Líquido',
+      data:data.map(d=>d.acumLiq),
+      borderColor:'#10b981', backgroundColor:'rgba(16,185,129,.09)',
+      fill:true, tension:.4, pointRadius:3, borderWidth:2, pointBackgroundColor:'#10b981'
+    }]},
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
+      scales:{ x:{grid:{display:false},ticks:{color:t,font:{size:10},maxTicksLimit:12}},
+               y:{grid:{color:g},ticks:{color:t,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(0)+'k'}} } }
   });
 }
 
 function destroyChart(id) { if(charts[id]){charts[id].destroy();delete charts[id];} }
 
 // ── FIREBASE ──────────────────────────────────────────────────────────
-async function saveToFirebase(rawData) {
+async function saveToFirebase(payload) {
   const ref = doc(db, 'investimentos', 'dashboard');
-  await setDoc(ref, { raw: rawData, updatedAt: Date.now() });
+  await setDoc(ref, { payload, updatedAt: Date.now() });
 }
 
 function subscribeRealtime() {
@@ -333,12 +402,18 @@ function subscribeRealtime() {
   onSnapshot(ref, snap => {
     if (snap.exists()) {
       const d = snap.data();
-      renderDashboard(d.raw, d.updatedAt);
+      // suporte ao formato antigo (campo 'raw') e novo (campo 'payload')
+      if (d.payload) {
+        renderDashboard(d.payload, d.updatedAt);
+      } else if (d.raw) {
+        // legado: converte raw para o novo formato mínimo
+        setStatus('Planilha antiga detectada. Por favor, faça um novo upload.');
+      }
     } else {
       setStatus('Nenhum dado encontrado. Faça o upload da planilha.');
     }
   }, err => {
-    setStatus('Erro Firebase: ' + err.message + ' — verifique se o Firestore está habilitado.');
+    setStatus('Erro Firebase: ' + err.message);
   });
 }
 
@@ -353,15 +428,14 @@ window.handleFile = async function(e) {
   reader.onload = async function(ev) {
     try {
       const wb = XLSX.read(ev.target.result, { type:'binary', cellDates:false });
-      let rawData = parseRicardoSheet(wb);
-      if (!rawData) rawData = parseGeneric(wb);
-      if (!rawData || rawData.length === 0) {
-        setStatus('Erro: não foi possível identificar os dados. Verifique se a planilha contém as colunas: Mês, Ano, Taxa, Financeiro, Acumulado.');
+      const payload = parseSheet(wb);
+      if (!payload || !payload.daily.length) {
+        setStatus('Erro: não foi possível ler os dados. Verifique se é a planilha correta (aba "Resultados").');
         return;
       }
-      setStatus(`Salvando ${rawData.length} registros na nuvem...`);
-      await saveToFirebase(rawData);
-      setStatus('✓ Planilha atualizada com sucesso! Todos os dispositivos serão atualizados.');
+      setStatus(`Salvando ${payload.daily.length} registros diários e ${payload.monthly.length} meses na nuvem...`);
+      await saveToFirebase(payload);
+      setStatus('✓ Atualizado com sucesso! Todos os dispositivos foram atualizados.');
     } catch(err) {
       setStatus('Erro: ' + err.message);
     }
@@ -373,7 +447,7 @@ window.handleDrop = function(e) {
   e.preventDefault();
   document.getElementById('dropzone').classList.remove('drag');
   const file = e.dataTransfer.files[0];
-  if (file) window.handleFile({ target: { files: [file] } });
+  if (file) window.handleFile({ target:{ files:[file] } });
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -382,34 +456,28 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 <style>
-:root{ --bg:#f1f5f9;--surf:#ffffff;--surf2:#f8fafc;--bdr:#e2e8f0;--txt:#0f172a;--muted:#64748b;--green:#059669;--red:#dc2626;--amber:#b45309;--blue:#2563eb; }
-@media(prefers-color-scheme:dark){ :root{--bg:#0f172a;--surf:#1e293b;--surf2:#0f172a;--bdr:#334155;--txt:#f1f5f9;--muted:#94a3b8;--green:#34d399;--red:#f87171;--amber:#fbbf24;--blue:#60a5fa;} }
+:root{--bg:#f1f5f9;--surf:#fff;--surf2:#f8fafc;--bdr:#e2e8f0;--txt:#0f172a;--muted:#64748b;--green:#059669;--red:#dc2626;--amber:#b45309}
+@media(prefers-color-scheme:dark){:root{--bg:#0f172a;--surf:#1e293b;--surf2:#0f172a;--bdr:#334155;--txt:#f1f5f9;--muted:#94a3b8;--green:#34d399;--red:#f87171;--amber:#fbbf24}}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--txt);min-height:100vh}
-
-/* ── UPLOAD ── */
 #upload-section{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1.5rem;flex-direction:column;gap:1.25rem}
-.upload-box{background:var(--surf);border:1.5px dashed var(--bdr);border-radius:16px;padding:2.5rem 2rem;text-align:center;max-width:500px;width:100%;cursor:pointer;transition:border-color .2s,background .2s}
-.upload-box.drag{border-color:var(--blue);background:rgba(37,99,235,.04)}
+.upload-box{background:var(--surf);border:1.5px dashed var(--bdr);border-radius:16px;padding:2.5rem 2rem;text-align:center;max-width:500px;width:100%;transition:border-color .2s}
+.upload-box.drag{border-color:#2563eb;background:rgba(37,99,235,.04)}
 .upload-box h2{font-size:17px;font-weight:700;margin-bottom:.4rem}
 .upload-box p{font-size:13px;color:var(--muted);margin-bottom:1.25rem;line-height:1.5}
 .upload-box input{display:none}
-.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 20px;border-radius:8px;border:1px solid var(--bdr);background:var(--surf2);color:var(--txt);font-size:13px;cursor:pointer;font-weight:500;transition:background .15s}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 20px;border-radius:8px;border:1px solid var(--bdr);background:var(--surf2);color:var(--txt);font-size:13px;cursor:pointer;font-weight:500}
 .btn:hover{background:var(--bdr)}
 #upload-status{font-size:13px;color:var(--muted);text-align:center;max-width:500px}
 .fmt-hint{background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:1rem 1.25rem;max-width:500px;width:100%}
 .fmt-hint p{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:.5rem}
 .fmt-hint code{font-size:11px;color:var(--muted);background:var(--surf2);padding:2px 6px;border-radius:4px;display:inline-block;margin:2px 0}
-
-/* ── DASHBOARD ── */
 #dashboard-section{display:none;padding:1.25rem;max-width:1300px;margin:0 auto}
 .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:.75rem}
 .header h1{font-size:20px;font-weight:700}
 .header .sub{font-size:11px;color:var(--muted);margin-top:3px}
 .btn-outline{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:8px;border:1px solid var(--bdr);background:var(--surf);color:var(--txt);font-size:12px;cursor:pointer;font-weight:500}
 .btn-outline:hover{background:var(--surf2)}
-
-/* ── METRICS ── */
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px;margin-bottom:1.25rem}
 .mc{background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:.9rem 1rem}
 .bruto-card{border-left:3px solid #94a3b8}
@@ -417,39 +485,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .mv{font-size:19px;font-weight:700}
 .ms{font-size:11px;margin-top:3px}
 .green{color:var(--green)}.red{color:var(--red)}.amber{color:var(--amber)}.muted{color:var(--muted)}.neutral{color:var(--txt)}
-
-/* ── CARDS & CHARTS ── */
 .card{background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:1.1rem 1.25rem;margin-bottom:1rem}
 .card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:.5rem}
 .card-title{font-size:13px;font-weight:600;color:var(--txt);margin-bottom:10px}
 .charts-row{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem;margin-bottom:0}
 .span2{grid-column:1/-1}
-.cw{position:relative}.h240{height:240px}.h220{height:200px}.h140{height:140px}
+.cw{position:relative}.h240{height:240px}.h200{height:200px}.h130{height:130px}
 @media(max-width:700px){.charts-row{grid-template-columns:1fr}.span2{grid-column:auto}}
-
-/* ── TABS ── */
 .tabs{display:flex;gap:4px}
 .tab{font-size:11px;padding:3px 10px;border-radius:20px;cursor:pointer;background:transparent;border:1px solid var(--bdr);color:var(--muted);font-weight:500}
 .tab.active{background:var(--surf2);color:var(--txt);border-color:var(--txt)}
-
-/* ── TABLE ── */
 .table-wrap{overflow-x:auto;max-height:420px;overflow-y:auto}
 table{width:100%;border-collapse:collapse;font-size:13px}
 thead{position:sticky;top:0;background:var(--surf);z-index:1}
 thead tr{border-bottom:2px solid var(--bdr)}
-th{padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+th{padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 td{padding:8px 10px;border-bottom:1px solid var(--bdr)}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:var(--surf2)}
 .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px}
 .bp{background:#dcfce7;color:#166534}.bn{background:#fee2e2;color:#991b1b}
 @media(prefers-color-scheme:dark){.bp{background:#14532d;color:#86efac}.bn{background:#7f1d1d;color:#fca5a5}}
-
 .fn{font-size:11px;color:var(--muted);text-align:center;padding:.75rem 0 .25rem;display:flex;align-items:center;justify-content:center;gap:5px}
 </style>
 </head>
 <body>
-
 <div id="upload-section">
   <div class="upload-box" id="dropzone"
     ondragover="event.preventDefault();this.classList.add('drag')"
@@ -457,7 +517,7 @@ tr:hover td{background:var(--surf2)}
     ondrop="handleDrop(event)">
     <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="1.5" style="margin-bottom:.9rem" aria-hidden="true"><path d="M9 17H7A5 5 0 017 7h.5M15 17h2A5 5 0 0017 7h-.5M12 12v9M9 18l3 3 3-3"/></svg>
     <h2>Dashboard de Investimentos</h2>
-    <p>Arraste sua planilha aqui ou clique para selecionar.<br>Após o upload, todos os dispositivos são atualizados automaticamente.</p>
+    <p>Arraste sua planilha aqui ou clique para selecionar.<br>Após o upload todos os dispositivos são atualizados.</p>
     <input type="file" id="fileInput" accept=".xlsx,.xls" onchange="handleFile(event)">
     <button class="btn" onclick="document.getElementById('fileInput').click()">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -466,13 +526,11 @@ tr:hover td{background:var(--surf2)}
   </div>
   <p id="upload-status">Conectando ao servidor...</p>
   <div class="fmt-hint">
-    <p>Planilha suportada: Ricardo_Saturnino.xlsx</p>
+    <p>Planilha: Ricardo_Saturnino.xlsx</p>
     <code>Aba: Resultados</code>
-    <code>Colunas: Mês · Ano · Data · Δ% Diário · Financeiro Diário · Acumulado Bruto</code>
+    <code>Lê: operações diárias + desconto IR + mensal líquido direto da planilha</code>
   </div>
 </div>
-
 <div id="dashboard-section"></div>
-
 </body>
 </html>
