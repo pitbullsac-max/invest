@@ -8,7 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCCqDt2L3lSEbKfbByigXpIDrMxHgNIxtA",
@@ -18,54 +18,173 @@ const firebaseConfig = {
   messagingSenderId: "874496232831",
   appId: "1:874496232831:web:d1c44ea3ccc6b369971e4a"
 };
-
 const app = initializeApp(firebaseConfig);
 const db  = getFirestore(app);
 
-// ── HELPERS ───────────────────────────────────────────────────────────
-const MESES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-let charts = {};
-function fmt(v)    { return Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:2,maximumFractionDigits:2}); }
-function fmtP(v)   { return (v>=0?'+':'')+Number(v||0).toFixed(2)+'%'; }
-function n(v)      { return (typeof v==='number'&&isFinite(v))?v:0; }
-function destroyChart(id) { if(charts[id]){charts[id].destroy();delete charts[id];} }
+// ── HELPERS ───────────────────────────────────────────────────────
+function fmt(v)  { return Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtP(v) { return (v>=0?'+':'')+Number(v||0).toFixed(2)+'%'; }
+function n(v)    { return (typeof v==='number'&&isFinite(v))?v:0; }
+let charts={};
+function destroyChart(id){if(charts[id]){charts[id].destroy();delete charts[id];}}
+function gc(){return window.matchMedia('(prefers-color-scheme:dark)').matches?'rgba(255,255,255,.07)':'rgba(0,0,0,.06)';}
+function tc(){return window.matchMedia('(prefers-color-scheme:dark)').matches?'#999':'#666';}
 
-// ════════════════════════════════════════════════════════════════════
-//  ABA ATIVA — controla qual aba está visível
-// ════════════════════════════════════════════════════════════════════
-let activeTab = 'daytrade';
-function switchTab(tab) {
-  activeTab = tab;
-  document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.tab===tab));
-  document.getElementById('tab-daytrade').style.display = tab==='daytrade' ? 'block' : 'none';
-  document.getElementById('tab-carteira').style.display = tab==='carteira' ? 'block' : 'none';
+// ── ESTADO GLOBAL ─────────────────────────────────────────────────
+let activeMain = 'trade';   // 'trade' | 'carteira' | 'consolidado'
+let activeCarteira = null;  // id do perfil ativo
+let perfis = [];            // [{id, nome, cor, ativos:[]}]
+let tradePayload = null;
+let tradeUpdatedAt = null;
+let dropdownOpen = false;
+
+const PERFIL_CORES = ['#3b82f6','#ec4899','#10b981','#f59e0b','#8b5cf6','#f97316'];
+const TIPO_COLORS  = {'Ação':'#3b82f6','FII':'#10b981','ETF':'#f59e0b','CDB':'#8b5cf6','Tesouro':'#06b6d4','Cripto':'#f97316','Outro':'#94a3b8'};
+const TIPO_OPTIONS = ['Ação','FII','ETF','CDB','Tesouro','Cripto','Outro'];
+
+// ════════════════════════════════════════════════════════════════
+//  NAVEGAÇÃO
+// ════════════════════════════════════════════════════════════════
+function switchMain(tab, perfilId) {
+  activeMain = tab;
+  if(perfilId) activeCarteira = perfilId;
+  closeDropdown();
+  buildNavbar();
+  document.getElementById('tab-trade').style.display       = tab==='trade'       ? 'block':'none';
+  document.getElementById('tab-carteira').style.display    = tab==='carteira'    ? 'block':'none';
+  document.getElementById('tab-consolidado').style.display = tab==='consolidado' ? 'block':'none';
+  if(tab==='trade'       && tradePayload) renderTrade(tradePayload, tradeUpdatedAt);
+  if(tab==='carteira'    && activeCarteira) renderCarteiraTab(activeCarteira);
+  if(tab==='consolidado') renderConsolidado();
 }
 
-// ════════════════════════════════════════════════════════════════════
-//  PARSER DAY TRADE (planilha Ricardo Saturnino)
-// ════════════════════════════════════════════════════════════════════
-function parseSheet(wb) {
-  const ws   = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true});
+function buildNavbar() {
+  const nav = document.getElementById('nav-tabs');
+  const perfAtivo = perfis.find(p=>p.id===activeCarteira);
+  nav.innerHTML = `
+    <button class="nav-tab ${activeMain==='trade'?'active':''}" onclick="switchMain('trade')">
+      <span class="dot" style="background:#f59e0b"></span> Trade
+    </button>
+    <div class="nav-dropdown" id="navDropdown">
+      <button class="nav-tab ${activeMain==='carteira'?'active':''}" id="btnCarteiraTab" onclick="toggleDropdown(event)">
+        <span class="dot" style="background:${perfAtivo?.cor||'#3b82f6'}"></span>
+        Carteira ${perfAtivo?'— '+perfAtivo.nome:''} <span style="font-size:10px;margin-left:2px">▾</span>
+      </button>
+      <div class="dropdown-menu" id="dropdownMenu" style="display:none">
+        ${perfis.map(p=>`
+          <button class="dd-item ${activeCarteira===p.id&&activeMain==='carteira'?'active':''}" onclick="switchMain('carteira','${p.id}')">
+            <span class="dot" style="background:${p.cor}"></span> ${p.nome}
+            <span class="dd-count">${p.ativos?.length||0} ativos</span>
+          </button>`).join('')}
+        <div class="dd-divider"></div>
+        <button class="dd-item" onclick="openNovoPerfil()">
+          <span style="font-size:14px">＋</span> Nova carteira
+        </button>
+        ${perfis.length>0?`
+        <div class="dd-divider"></div>
+        <button class="nav-tab ${activeMain==='consolidado'?'active':''}" style="width:100%;justify-content:flex-start;border-radius:6px;padding:8px 12px;font-size:12px" onclick="switchMain('consolidado')">
+          <span style="font-size:12px">⊞</span> Visão consolidada
+        </button>`:''}
+      </div>
+    </div>
+  `;
+}
+
+function toggleDropdown(e) {
+  e.stopPropagation();
+  dropdownOpen=!dropdownOpen;
+  const m=document.getElementById('dropdownMenu');
+  if(m) m.style.display=dropdownOpen?'block':'none';
+}
+function closeDropdown() {
+  dropdownOpen=false;
+  const m=document.getElementById('dropdownMenu');
+  if(m) m.style.display='none';
+}
+window.toggleDropdown=toggleDropdown;
+window.switchMain=switchMain;
+document.addEventListener('click', closeDropdown);
+
+// ════════════════════════════════════════════════════════════════
+//  FIREBASE — PERFIS
+// ════════════════════════════════════════════════════════════════
+async function loadPerfis() {
+  const snap = await getDoc(doc(db,'investimentos','perfis'));
+  if(snap.exists()) perfis = snap.data().lista||[];
+  // Garante perfis padrão se não existir nenhum
+  if(perfis.length===0) {
+    perfis = [
+      {id:'minha', nome:'Minha Carteira', cor:'#3b82f6', ativos:[]},
+      {id:'gigi',  nome:'Carteira Gigi',  cor:'#ec4899', ativos:[]}
+    ];
+    await savePerfis();
+  }
+  if(!activeCarteira) activeCarteira = perfis[0].id;
+}
+
+async function savePerfis() {
+  await setDoc(doc(db,'investimentos','perfis'),{lista:perfis, updatedAt:Date.now()});
+}
+
+// ════════════════════════════════════════════════════════════════
+//  NOVO PERFIL MODAL
+// ════════════════════════════════════════════════════════════════
+function openNovoPerfil() {
+  closeDropdown();
+  document.getElementById('modalNovoPerfil').style.display='flex';
+  document.getElementById('npNome').value='';
+  document.getElementById('npCor').value=PERFIL_CORES[perfis.length%PERFIL_CORES.length];
+}
+function closeNovoPerfil(){ document.getElementById('modalNovoPerfil').style.display='none'; }
+async function salvarNovoPerfil(){
+  const nome=document.getElementById('npNome').value.trim();
+  const cor=document.getElementById('npCor').value;
+  if(!nome){alert('Informe um nome.');return;}
+  const id='p'+Date.now();
+  perfis.push({id,nome,cor,ativos:[]});
+  await savePerfis();
+  closeNovoPerfil();
+  buildNavbar();
+  switchMain('carteira',id);
+}
+window.openNovoPerfil=openNovoPerfil;
+window.closeNovoPerfil=closeNovoPerfil;
+window.salvarNovoPerfil=salvarNovoPerfil;
+
+// ════════════════════════════════════════════════════════════════
+//  PREÇOS — brapi.dev
+// ════════════════════════════════════════════════════════════════
+async function fetchPrice(ticker){
+  try{
+    const r=await fetch(`https://brapi.dev/api/quote/${ticker}?token=demo`);
+    const d=await r.json();
+    if(d.results&&d.results[0]&&d.results[0].regularMarketPrice)
+      return {price:d.results[0].regularMarketPrice,change:d.results[0].regularMarketChangePercent||0,name:d.results[0].longName||ticker};
+  }catch(e){}
+  return null;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  PARSER DAY TRADE
+// ════════════════════════════════════════════════════════════════
+function parseSheet(wb){
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true});
   let startRow=-1;
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
     if(typeof r[0]==='number'&&r[0]>=1&&r[0]<=12&&typeof r[1]==='number'&&r[1]>=2020&&typeof r[11]==='number'&&r[11]>1000){startRow=i;break;}
   }
-  if(startRow<0) return null;
+  if(startRow<0)return null;
   const daily=[];
   for(let i=startRow;i<rows.length;i++){
     const r=rows[i];
-    if(typeof r[0]!=='number'||typeof r[11]!=='number'||r[11]<=0) continue;
-    let dataStr='';
-    if(r[5]){
-      if(typeof r[5]==='number'){const d=new Date(Math.round((r[5]-25569)*86400*1000));dataStr=d.toISOString().split('T')[0];}
-      else if(r[5] instanceof Date){dataStr=r[5].toISOString().split('T')[0];}
-      else{dataStr=String(r[5]).split('T')[0];}
-    }
-    daily.push({mes:Math.round(r[0]),ano:Math.round(r[1]),data:dataStr,taxa:n(r[7]),financeiro:n(r[9]),saldo:n(r[11]),obs:r[12]?String(r[12]):''});
+    if(typeof r[0]!=='number'||typeof r[11]!=='number'||r[11]<=0)continue;
+    let ds='';
+    if(r[5]){if(typeof r[5]==='number'){const d=new Date(Math.round((r[5]-25569)*86400*1000));ds=d.toISOString().split('T')[0];}else if(r[5] instanceof Date){ds=r[5].toISOString().split('T')[0];}else{ds=String(r[5]).split('T')[0];}}
+    daily.push({mes:Math.round(r[0]),ano:Math.round(r[1]),data:ds,taxa:n(r[7]),financeiro:n(r[9]),saldo:n(r[11]),obs:r[12]?String(r[12]):''});
   }
-  const COL_MAP=[
+  const CM=[
     {label:'Jul/24',mes:7,ano:2024,col:15},{label:'Ago/24',mes:8,ano:2024,col:16},{label:'Set/24',mes:9,ano:2024,col:17},
     {label:'Out/24',mes:10,ano:2024,col:18},{label:'Nov/24',mes:11,ano:2024,col:19},{label:'Dez/24',mes:12,ano:2024,col:20},
     {label:'Jan/25',mes:1,ano:2025,col:22},{label:'Fev/25',mes:2,ano:2025,col:23},{label:'Mar/25',mes:3,ano:2025,col:24},
@@ -78,65 +197,52 @@ function parseSheet(wb) {
     {label:'Out/26',mes:10,ano:2026,col:44},{label:'Nov/26',mes:11,ano:2026,col:45},{label:'Dez/26',mes:12,ano:2026,col:46},
   ];
   const monthly=[];
-  for(const m of COL_MAP){
-    const brutoMen=n(rows[13]?.[m.col]),acumBruto=n(rows[14]?.[m.col]),desconto=n(rows[20]?.[m.col]),liqMen=n(rows[22]?.[m.col]),acumLiq=n(rows[23]?.[m.col]);
-    if(acumBruto<=0&&acumLiq<=0) continue;
-    const pct=acumBruto>0&&brutoMen>0?(brutoMen/(acumBruto-brutoMen))*100:0;
-    monthly.push({...m,brutoMen,acumBruto,desconto:Math.abs(desconto),liqMen,acumLiq,pct});
+  for(const m of CM){
+    const bm=n(rows[13]?.[m.col]),ab=n(rows[14]?.[m.col]),dc=n(rows[20]?.[m.col]),lm=n(rows[22]?.[m.col]),al=n(rows[23]?.[m.col]);
+    if(ab<=0&&al<=0)continue;
+    const pct=ab>0&&bm>0?(bm/(ab-bm))*100:0;
+    monthly.push({...m,brutoMen:bm,acumBruto:ab,desconto:Math.abs(dc),liqMen:lm,acumLiq:al,pct});
   }
   const aportes=[];
-  daily.forEach(d=>{
-    if(d.obs.toLowerCase().includes('aporte')){
-      const m=d.obs.match(/r\$\s*([\d.,]+)/i);
-      if(m){const val=parseFloat(m[1].replace(/\./g,'').replace(',','.'));if(!isNaN(val)&&val>0)aportes.push({data:d.data,valor:val,obs:d.obs});}
-    }
-  });
+  daily.forEach(d=>{if(d.obs.toLowerCase().includes('aporte')){const m=d.obs.match(/r\$\s*([\d.,]+)/i);if(m){const val=parseFloat(m[1].replace(/\./g,'').replace(',','.'));if(!isNaN(val)&&val>0)aportes.push({data:d.data,valor:val,obs:d.obs});}}});
   const totalAportado=aportes.reduce((s,a)=>s+a.valor,0)||daily[0]?.saldo||0;
   return {daily,monthly,totalAportado,aportes};
 }
 
-// ════════════════════════════════════════════════════════════════════
-//  RENDER DAY TRADE
-// ════════════════════════════════════════════════════════════════════
-function renderDayTrade(payload, uploadedAt) {
-  const {daily,monthly,totalAportado,aportes} = payload;
-  const ultimo      = monthly[monthly.length-1];
-  const saldoBruto  = ultimo.acumBruto;
-  const saldoLiq    = ultimo.acumLiq;
-  const lucroLiq    = saldoLiq - totalAportado;
-  const pctLiqTotal = totalAportado>0?(lucroLiq/totalAportado)*100:0;
-  const diasUteis   = daily.filter(d=>d.taxa>0);
-  const semana      = diasUteis.slice(-5);
-  const rendSemBruto= semana.reduce((s,d)=>s+d.financeiro,0);
-  const diasUteisUltMes=daily.filter(d=>d.mes===ultimo.mes&&d.ano===ultimo.ano&&d.taxa>0).length||1;
-  const irDia       = ultimo.desconto/diasUteisUltMes;
-  const rendSemLiq  = rendSemBruto-(irDia*semana.length);
-  const saldoIniSem = semana.length>0?semana[0].saldo-semana[0].financeiro:saldoBruto;
-  const pctSem      = saldoIniSem>0?(rendSemLiq/saldoIniSem)*100:0;
-  const taxaMedia   = diasUteis.length>0?diasUteis.reduce((s,d)=>s+d.taxa,0)/diasUteis.length*100:0;
-  const upDate      = uploadedAt?new Date(uploadedAt).toLocaleString('pt-BR'):'';
+// ════════════════════════════════════════════════════════════════
+//  RENDER TRADE
+// ════════════════════════════════════════════════════════════════
+function renderTrade(payload, uploadedAt){
+  const {daily,monthly,totalAportado,aportes}=payload;
+  const ult=monthly[monthly.length-1];
+  const sB=ult.acumBruto,sL=ult.acumLiq,lL=sL-totalAportado,pL=totalAportado>0?(lL/totalAportado)*100:0;
+  const du=daily.filter(d=>d.taxa>0),sem=du.slice(-5);
+  const rSB=sem.reduce((s,d)=>s+d.financeiro,0);
+  const dum=daily.filter(d=>d.mes===ult.mes&&d.ano===ult.ano&&d.taxa>0).length||1;
+  const rSL=rSB-(ult.desconto/dum*sem.length);
+  const sIS=sem.length>0?sem[0].saldo-sem[0].financeiro:sB;
+  const pS=sIS>0?(rSL/sIS)*100:0;
+  const tM=du.length>0?du.reduce((s,d)=>s+d.taxa,0)/du.length*100:0;
+  const upDate=uploadedAt?new Date(uploadedAt).toLocaleString('pt-BR'):'';
 
-  const el = document.getElementById('tab-daytrade');
-  el.innerHTML = `
+  const el=document.getElementById('tab-trade');
+  el.innerHTML=`
     <div class="tab-header">
-      <div>
-        <h2>Day Trade — Alto Rendimento</h2>
-        <p class="sub">Atualizado: ${upDate} · ${daily.length} dias · ${monthly.length} meses</p>
-      </div>
-      <button class="btn-outline" id="btnNovaPlani">
+      <div><h2>Trade — Alto Rendimento</h2><p class="sub">Atualizado: ${upDate} · ${daily.length} dias · ${monthly.length} meses</p></div>
+      <button class="btn-outline" onclick="showUpload(true)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         Nova planilha
       </button>
     </div>
     <div class="metrics">
-      <div class="mc bruto-card"><div class="ml">Saldo bruto</div><div class="mv neutral">${fmt(saldoBruto)}</div><div class="ms muted">antes do IR</div></div>
-      <div class="mc"><div class="ml">Saldo líquido</div><div class="mv green">${fmt(saldoLiq)}</div><div class="ms muted">aportado: ${fmt(totalAportado)}</div></div>
-      <div class="mc"><div class="ml">Lucro líquido total</div><div class="mv green">${fmt(lucroLiq)}</div><div class="ms green">${fmtP(pctLiqTotal)} sobre aportado</div></div>
-      <div class="mc"><div class="ml">Semana (líq.)</div><div class="mv ${rendSemLiq>=0?'green':'red'}">${fmt(rendSemLiq)}</div><div class="ms ${pctSem>=0?'green':'red'}">${fmtP(pctSem)}</div></div>
-      <div class="mc"><div class="ml">${ultimo.label} líq.</div><div class="mv ${ultimo.liqMen>=0?'green':'red'}">${fmt(ultimo.liqMen)}</div><div class="ms muted">IR: ${fmt(ultimo.desconto)}</div></div>
-      <div class="mc"><div class="ml">Taxa média/dia</div><div class="mv amber">${taxaMedia.toFixed(4)}%</div><div class="ms muted">${diasUteis.length} dias úteis</div></div>
+      <div class="mc bruto-card"><div class="ml">Saldo bruto</div><div class="mv neutral">${fmt(sB)}</div><div class="ms muted">antes do IR</div></div>
+      <div class="mc"><div class="ml">Saldo líquido</div><div class="mv green">${fmt(sL)}</div><div class="ms muted">aportado: ${fmt(totalAportado)}</div></div>
+      <div class="mc"><div class="ml">Lucro líquido</div><div class="mv green">${fmt(lL)}</div><div class="ms green">${fmtP(pL)} sobre aportado</div></div>
+      <div class="mc"><div class="ml">Semana (líq.)</div><div class="mv ${rSL>=0?'green':'red'}">${fmt(rSL)}</div><div class="ms ${pS>=0?'green':'red'}">${fmtP(pS)}</div></div>
+      <div class="mc"><div class="ml">${ult.label} líq.</div><div class="mv ${ult.liqMen>=0?'green':'red'}">${fmt(ult.liqMen)}</div><div class="ms muted">IR: ${fmt(ult.desconto)}</div></div>
+      <div class="mc"><div class="ml">Taxa média/dia</div><div class="mv amber">${tM.toFixed(4)}%</div><div class="ms muted">${du.length} dias úteis</div></div>
     </div>
-    <div class="charts-row">
+    <div class="charts-row two">
       <div class="card span2">
         <div class="card-header">
           <span class="card-title">Evolução do acumulado líquido</span>
@@ -152,418 +258,361 @@ function renderDayTrade(payload, uploadedAt) {
       <div class="card"><div class="card-title">Rendimento mensal líquido (R$)</div><div class="cw h200"><canvas id="rendChart"></canvas></div></div>
       <div class="card"><div class="card-title">Desconto IR mensal (R$)</div><div class="cw h200"><canvas id="irChart"></canvas></div></div>
     </div>
-    <div class="card" style="margin-bottom:1rem">
-      <div class="card-title">Taxa diária — últimos 90 dias úteis</div>
-      <div class="cw h130"><canvas id="dailyChart"></canvas></div>
-    </div>
+    <div class="card" style="margin-bottom:1rem"><div class="card-title">Taxa diária — últimos 90 dias úteis</div><div class="cw h130"><canvas id="dailyChart"></canvas></div></div>
     <div class="card">
-      <div class="card-title">Histórico mensal completo</div>
+      <div class="card-title">Histórico mensal</div>
       <div class="table-wrap">
-        <table>
-          <thead><tr><th>Mês</th><th>Rend. Bruto</th><th>Acum. Bruto</th><th>Desconto IR</th><th>Rend. Líq.</th><th>Acum. Líq.</th><th>%</th></tr></thead>
-          <tbody id="tBodyDT"></tbody>
-        </table>
+        <table><thead><tr><th>Mês</th><th>Rend. Bruto</th><th>Acum. Bruto</th><th>Desconto IR</th><th>Rend. Líq.</th><th>Acum. Líq.</th><th>%</th></tr></thead>
+        <tbody id="tBodyDT"></tbody></table>
       </div>
-    </div>
-  `;
+    </div>`;
 
-  document.getElementById('btnNovaPlani').onclick = () => showUpload(true);
   document.querySelectorAll('#tabsHist .tab').forEach(b=>{
     b.addEventListener('click',function(){
       document.querySelectorAll('#tabsHist .tab').forEach(t=>t.classList.remove('active'));
-      this.classList.add('active'); buildHist(this.dataset.p,monthly);
+      this.classList.add('active'); buildHistChart(this.dataset.p,monthly);
     });
   });
-
-  const tbody=document.getElementById('tBodyDT');
+  const tb=document.getElementById('tBodyDT');
   [...monthly].reverse().forEach(d=>{
     const tr=document.createElement('tr');
     tr.innerHTML=`<td><strong>${d.label}</strong></td><td class="muted">${fmt(d.brutoMen)}</td><td class="muted">${fmt(d.acumBruto)}</td><td class="red">-${fmt(d.desconto)}</td><td class="green">${fmt(d.liqMen)}</td><td class="green"><strong>${fmt(d.acumLiq)}</strong></td><td><span class="badge ${d.pct>=0?'bp':'bn'}">${fmtP(d.pct)}</span></td>`;
-    tbody.appendChild(tr);
+    tb.appendChild(tr);
   });
-
-  const isDark=window.matchMedia('(prefers-color-scheme:dark)').matches;
-  const gc=isDark?'rgba(255,255,255,.07)':'rgba(0,0,0,.06)';
-  const tc=isDark?'#999':'#666';
-  buildHist('all',monthly,gc,tc);
-
+  buildHistChart('all',monthly);
   destroyChart('rendChart');
-  charts['rendChart']=new Chart(document.getElementById('rendChart'),{type:'bar',data:{labels:monthly.map(d=>d.label),datasets:[{data:monthly.map(d=>d.liqMen),backgroundColor:monthly.map(d=>d.liqMen>=0?'rgba(16,185,129,.75)':'rgba(239,68,68,.75)'),borderRadius:3,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:tc,font:{size:9},maxTicksLimit:12}},y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}}}}});
-
+  charts['rendChart']=new Chart(document.getElementById('rendChart'),{type:'bar',data:{labels:monthly.map(d=>d.label),datasets:[{data:monthly.map(d=>d.liqMen),backgroundColor:monthly.map(d=>d.liqMen>=0?'rgba(16,185,129,.75)':'rgba(239,68,68,.75)'),borderRadius:3,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:tc(),font:{size:9},maxTicksLimit:12}},y:{grid:{color:gc()},ticks:{color:tc(),font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}}}}});
   destroyChart('irChart');
-  charts['irChart']=new Chart(document.getElementById('irChart'),{type:'bar',data:{labels:monthly.map(d=>d.label),datasets:[{data:monthly.map(d=>d.desconto),backgroundColor:'rgba(239,68,68,.55)',borderRadius:3,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:tc,font:{size:9},maxTicksLimit:12}},y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}}}}});
-
-  const diasRec=daily.filter(d=>d.taxa>0).slice(-90);
+  charts['irChart']=new Chart(document.getElementById('irChart'),{type:'bar',data:{labels:monthly.map(d=>d.label),datasets:[{data:monthly.map(d=>d.desconto),backgroundColor:'rgba(239,68,68,.55)',borderRadius:3,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:tc(),font:{size:9},maxTicksLimit:12}},y:{grid:{color:gc()},ticks:{color:tc(),font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}}}}});
+  const dr=daily.filter(d=>d.taxa>0).slice(-90);
   destroyChart('dailyChart');
-  charts['dailyChart']=new Chart(document.getElementById('dailyChart'),{type:'line',data:{labels:diasRec.map(d=>d.data),datasets:[{data:diasRec.map(d=>(d.taxa*100)),borderColor:'#f59e0b',borderWidth:1.5,pointRadius:0,backgroundColor:'rgba(245,158,11,.07)',fill:true,tension:.3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label,label:i=>i.raw.toFixed(4)+'%'}}},scales:{x:{display:false},y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>v.toFixed(3)+'%'}}}}});
+  charts['dailyChart']=new Chart(document.getElementById('dailyChart'),{type:'line',data:{labels:dr.map(d=>d.data),datasets:[{data:dr.map(d=>(d.taxa*100)),borderColor:'#f59e0b',borderWidth:1.5,pointRadius:0,backgroundColor:'rgba(245,158,11,.07)',fill:true,tension:.3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label,label:i=>i.raw.toFixed(4)+'%'}}},scales:{x:{display:false},y:{grid:{color:gc()},ticks:{color:tc(),font:{size:10},callback:v=>v.toFixed(3)+'%'}}}}});
 }
 
-function buildHist(p,monthly,gc,tc){
-  const isDark=window.matchMedia('(prefers-color-scheme:dark)').matches;
-  const g=gc||(isDark?'rgba(255,255,255,.07)':'rgba(0,0,0,.06)');
-  const t=tc||(isDark?'#999':'#666');
+function buildHistChart(p,monthly){
   const data=p==='all'?monthly:monthly.filter(d=>String(d.ano)===p);
   destroyChart('histChart');
-  charts['histChart']=new Chart(document.getElementById('histChart'),{type:'line',data:{labels:data.map(d=>d.label),datasets:[{label:'Acumulado Líquido',data:data.map(d=>d.acumLiq),borderColor:'#10b981',backgroundColor:'rgba(16,185,129,.09)',fill:true,tension:.4,pointRadius:3,borderWidth:2,pointBackgroundColor:'#10b981'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:t,font:{size:10},maxTicksLimit:12}},y:{grid:{color:g},ticks:{color:t,font:{size:10},callback:v=>'R$'+(v/1000).toFixed(0)+'k'}}}}});
+  charts['histChart']=new Chart(document.getElementById('histChart'),{type:'line',data:{labels:data.map(d=>d.label),datasets:[{label:'Acumulado Líquido',data:data.map(d=>d.acumLiq),borderColor:'#10b981',backgroundColor:'rgba(16,185,129,.09)',fill:true,tension:.4,pointRadius:3,borderWidth:2,pointBackgroundColor:'#10b981'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:tc(),font:{size:10},maxTicksLimit:12}},y:{grid:{color:gc()},ticks:{color:tc(),font:{size:10},callback:v=>'R$'+(v/1000).toFixed(0)+'k'}}}}});
 }
 
-// ════════════════════════════════════════════════════════════════════
-//  CARTEIRA DE INVESTIMENTOS
-// ════════════════════════════════════════════════════════════════════
-const TIPO_COLORS = {
-  'Ação':     '#3b82f6', 'FII': '#10b981', 'ETF': '#f59e0b',
-  'CDB':      '#8b5cf6', 'Tesouro': '#06b6d4', 'Cripto': '#f97316', 'Outro': '#94a3b8'
-};
-const TIPO_OPTIONS = ['Ação','FII','ETF','CDB','Tesouro','Cripto','Outro'];
+// ════════════════════════════════════════════════════════════════
+//  RENDER CARTEIRA (por perfil)
+// ════════════════════════════════════════════════════════════════
+function renderCarteiraTab(perfilId){
+  const perfil = perfis.find(p=>p.id===perfilId);
+  if(!perfil) return;
+  const ativos = perfil.ativos||[];
+  const el     = document.getElementById('tab-carteira');
 
-let carteira = []; // [{id, ticker, nome, tipo, corretora, qtd, precoMedio, precoAtual, atualizadoEm}]
-let carteiraEditId = null;
+  const totalInv  = ativos.reduce((s,a)=>s+(a.qtd*a.precoMedio),0);
+  const totalAt   = ativos.reduce((s,a)=>s+(a.qtd*(a.precoAtual||a.precoMedio)),0);
+  const lucro     = totalAt-totalInv;
+  const pct       = totalInv>0?(lucro/totalInv)*100:0;
+  const porTipo   = {};
+  ativos.forEach(a=>{const v=a.qtd*(a.precoAtual||a.precoMedio);porTipo[a.tipo]=(porTipo[a.tipo]||0)+v;});
 
-async function loadCarteira() {
-  const snap = await getDoc(doc(db,'investimentos','carteira'));
-  if(snap.exists()) carteira = snap.data().ativos || [];
-  else carteira = [];
-}
-
-async function saveCarteira() {
-  await setDoc(doc(db,'investimentos','carteira'),{ativos:carteira, updatedAt:Date.now()});
-}
-
-// Busca preço via brapi.dev (gratuita, sem auth para B3)
-async function fetchPrice(ticker) {
-  try {
-    // Tenta brapi.dev primeiro
-    const r = await fetch(`https://brapi.dev/api/quote/${ticker}?token=demo`);
-    const d = await r.json();
-    if(d.results && d.results[0] && d.results[0].regularMarketPrice) {
-      return { price: d.results[0].regularMarketPrice, change: d.results[0].regularMarketChangePercent||0, name: d.results[0].longName||ticker };
-    }
-  } catch(e){}
-  return null;
-}
-
-async function refreshPrices() {
-  const btn = document.getElementById('btnRefresh');
-  if(btn) { btn.disabled=true; btn.textContent='Atualizando...'; }
-  let updated = 0;
-  for(let i=0; i<carteira.length; i++){
-    const at = carteira[i];
-    if(['Ação','FII','ETF'].includes(at.tipo)) {
-      const p = await fetchPrice(at.ticker);
-      if(p) { carteira[i].precoAtual=p.price; carteira[i].changeDay=p.change; carteira[i].atualizadoEm=Date.now(); updated++; }
-    }
-  }
-  if(updated>0) await saveCarteira();
-  renderCarteira();
-  if(btn) { btn.disabled=false; btn.textContent='↻ Atualizar preços'; }
-}
-
-function renderCarteira() {
-  const el = document.getElementById('tab-carteira');
-
-  // Totais
-  const totalInvestido = carteira.reduce((s,a)=>s+(a.qtd*a.precoMedio),0);
-  const totalAtual     = carteira.reduce((s,a)=>s+(a.qtd*(a.precoAtual||a.precoMedio)),0);
-  const lucroTotal     = totalAtual - totalInvestido;
-  const pctTotal       = totalInvestido>0?(lucroTotal/totalInvestido)*100:0;
-
-  // Por tipo
-  const porTipo = {};
-  carteira.forEach(a=>{
-    const val = a.qtd*(a.precoAtual||a.precoMedio);
-    porTipo[a.tipo]=(porTipo[a.tipo]||0)+val;
-  });
-
-  // Por corretora
-  const porCorretora = {};
-  carteira.forEach(a=>{
-    const val = a.qtd*(a.precoAtual||a.precoMedio);
-    const cor = a.corretora||'Não informada';
-    porCorretora[cor]=(porCorretora[cor]||0)+val;
-  });
-
-  el.innerHTML = `
+  el.innerHTML=`
     <div class="tab-header">
-      <div><h2>Carteira de Investimentos</h2><p class="sub">${carteira.length} ativos cadastrados</p></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="perfil-badge" style="background:${perfil.cor}20;color:${perfil.cor};border:1px solid ${perfil.cor}40">${perfil.nome}</span>
+        <div><h2>Carteira de Investimentos</h2><p class="sub">${ativos.length} ativos cadastrados</p></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn-ghost" onclick="openRenamePerfil('${perfil.id}')">✎ Renomear</button>
         <button class="btn-outline" id="btnRefresh">↻ Atualizar preços</button>
-        <button class="btn-primary" id="btnAddAtivo">+ Adicionar ativo</button>
+        <button class="btn-primary" onclick="openAtivoModal(null,'${perfil.id}')">+ Adicionar ativo</button>
       </div>
     </div>
-
     <div class="metrics">
-      <div class="mc"><div class="ml">Total investido</div><div class="mv neutral">${fmt(totalInvestido)}</div><div class="ms muted">preço médio</div></div>
-      <div class="mc"><div class="ml">Valor atual</div><div class="mv ${totalAtual>=totalInvestido?'green':'red'}">${fmt(totalAtual)}</div><div class="ms muted">a mercado</div></div>
-      <div class="mc"><div class="ml">Lucro / Prejuízo</div><div class="mv ${lucroTotal>=0?'green':'red'}">${fmt(lucroTotal)}</div><div class="ms ${pctTotal>=0?'green':'red'}">${fmtP(pctTotal)}</div></div>
-      <div class="mc"><div class="ml">Nº de ativos</div><div class="mv neutral">${carteira.length}</div><div class="ms muted">${Object.keys(porTipo).join(' · ')||'—'}</div></div>
+      <div class="mc"><div class="ml">Total investido</div><div class="mv neutral">${fmt(totalInv)}</div><div class="ms muted">preço médio</div></div>
+      <div class="mc"><div class="ml">Valor atual</div><div class="mv ${totalAt>=totalInv?'green':'red'}">${fmt(totalAt)}</div><div class="ms muted">a mercado</div></div>
+      <div class="mc"><div class="ml">Lucro / Prejuízo</div><div class="mv ${lucro>=0?'green':'red'}">${fmt(lucro)}</div><div class="ms ${pct>=0?'green':'red'}">${fmtP(pct)}</div></div>
+      <div class="mc"><div class="ml">Nº de ativos</div><div class="mv neutral">${ativos.length}</div><div class="ms muted">${Object.keys(porTipo).join(' · ')||'—'}</div></div>
     </div>
-
-    ${carteira.length>0?`
-    <div class="charts-row" style="margin-bottom:1rem">
-      <div class="card">
-        <div class="card-title">Alocação por tipo</div>
-        <div class="cw h200"><canvas id="pieChart"></canvas></div>
-      </div>
-      <div class="card">
-        <div class="card-title">Alocação por corretora</div>
-        <div class="cw h200"><canvas id="pieCorretora"></canvas></div>
-      </div>
-      <div class="card">
-        <div class="card-title">Lucro por ativo (%)</div>
-        <div class="cw h200"><canvas id="barAtivos"></canvas></div>
-      </div>
+    ${ativos.length>0?`
+    <div class="charts-row three">
+      <div class="card"><div class="card-title">Alocação por tipo</div><div class="cw h180"><canvas id="pieChart"></canvas></div></div>
+      <div class="card"><div class="card-title">Lucro por ativo (%)</div><div class="cw h180"><canvas id="barAtivos"></canvas></div></div>
+      <div class="card"><div class="card-title">Patrimônio por ativo</div><div class="cw h180"><canvas id="barPatr"></canvas></div></div>
     </div>`:''}
-
     <div class="card">
-      <div class="card-title">Meus ativos</div>
-      ${carteira.length===0?`<div style="text-align:center;padding:2rem;color:var(--muted)">
-        <p style="font-size:32px;margin-bottom:.5rem">📊</p>
+      <div class="card-title">Ativos</div>
+      ${ativos.length===0?`<div class="empty-state">
+        <div style="font-size:36px;margin-bottom:.5rem">📊</div>
         <p>Nenhum ativo cadastrado ainda.</p>
-        <p style="font-size:12px;margin-top:.25rem">Clique em "+ Adicionar ativo" para começar.</p>
+        <p style="font-size:12px;margin-top:.25rem;color:var(--muted)">Clique em "+ Adicionar ativo" para começar.</p>
       </div>`:`
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Ativo</th><th>Tipo</th><th>Corretora</th><th>Qtd</th><th>P. Médio</th><th>P. Atual</th><th>Total invest.</th><th>Valor atual</th><th>Lucro R$</th><th>Lucro %</th><th>Dia</th><th></th></tr></thead>
-          <tbody id="tBodyCarteira"></tbody>
-        </table>
-      </div>`}
-    </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Ativo</th><th>Tipo</th><th>Qtd</th><th>P. Médio</th><th>P. Atual</th><th>Investido</th><th>Valor Atual</th><th>Lucro R$</th><th>Lucro %</th><th>Dia</th><th></th></tr></thead>
+        <tbody id="tBodyC"></tbody>
+      </table></div>`}
+    </div>`;
 
-    <!-- MODAL -->
-    <div class="modal-overlay" id="modalOverlay" style="display:none">
-      <div class="modal">
-        <div class="modal-header">
-          <h3 id="modalTitle">Adicionar ativo</h3>
-          <button class="modal-close" id="modalClose">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="form-grid">
-            <div class="form-group span2">
-              <label>Ticker / Código</label>
-              <input id="f_ticker" placeholder="ex: ITUB4, XPML11, BTC" style="text-transform:uppercase">
-              <span class="form-hint">Para ações e FIIs, o preço atual será buscado automaticamente.</span>
-            </div>
-            <div class="form-group">
-              <label>Nome / Descrição</label>
-              <input id="f_nome" placeholder="ex: Itaú Unibanco">
-            </div>
-            <div class="form-group">
-              <label>Tipo</label>
-              <select id="f_tipo">${TIPO_OPTIONS.map(t=>`<option value="${t}">${t}</option>`).join('')}</select>
-            </div>
-            <div class="form-group">
-              <label>Corretora</label>
-              <input id="f_corretora" placeholder="ex: Rico, Agora, XP">
-            </div>
-            <div class="form-group">
-              <label>Quantidade</label>
-              <input id="f_qtd" type="number" placeholder="ex: 100" min="0" step="0.01">
-            </div>
-            <div class="form-group">
-              <label>Preço médio (R$)</label>
-              <input id="f_preco" type="number" placeholder="ex: 28.50" min="0" step="0.01">
-            </div>
-            <div class="form-group">
-              <label>Preço atual (R$) <span style="font-size:10px;color:var(--muted)">(opcional — será buscado auto)</span></label>
-              <input id="f_atual" type="number" placeholder="ex: 31.20" min="0" step="0.01">
-            </div>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn-outline" id="btnCancelar">Cancelar</button>
-          <button class="btn-primary" id="btnSalvarAtivo">Salvar</button>
-        </div>
-      </div>
-    </div>
-  `;
+  document.getElementById('btnRefresh').onclick=()=>refreshPrices(perfil.id);
 
-  document.getElementById('btnAddAtivo').onclick = () => openModal(null);
-  document.getElementById('btnRefresh').onclick  = refreshPrices;
-  document.getElementById('modalClose').onclick  = closeModal;
-  document.getElementById('btnCancelar').onclick = closeModal;
-  document.getElementById('modalOverlay').onclick = e => { if(e.target===e.currentTarget) closeModal(); };
-  document.getElementById('btnSalvarAtivo').onclick = salvarAtivo;
-
-  // Tabela de ativos
-  if(carteira.length>0){
-    const tbody = document.getElementById('tBodyCarteira');
-    carteira.forEach(a=>{
-      const inv    = a.qtd * a.precoMedio;
-      const atual  = a.qtd * (a.precoAtual||a.precoMedio);
-      const lucro  = atual - inv;
-      const pct    = inv>0?(lucro/inv)*100:0;
-      const chDay  = a.changeDay||0;
-      const upAt   = a.atualizadoEm ? new Date(a.atualizadoEm).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—';
-      const tr     = document.createElement('tr');
-      tr.innerHTML = `
-        <td><strong>${a.ticker}</strong><br><span class="seg">${a.nome||''}</span></td>
+  if(ativos.length>0){
+    const tb=document.getElementById('tBodyC');
+    ativos.forEach(a=>{
+      const inv=a.qtd*a.precoMedio,at=a.qtd*(a.precoAtual||a.precoMedio),l=at-inv,p=inv>0?(l/inv)*100:0;
+      const up=a.atualizadoEm?new Date(a.atualizadoEm).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td><strong>${a.ticker}</strong><br><span class="seg">${a.nome||''}</span></td>
         <td><span class="tipo-badge" style="background:${TIPO_COLORS[a.tipo]||'#94a3b8'}20;color:${TIPO_COLORS[a.tipo]||'#94a3b8'}">${a.tipo}</span></td>
-        <td class="muted">${a.corretora||'—'}</td>
-        <td>${a.qtd}</td>
-        <td class="muted">${fmt(a.precoMedio)}</td>
-        <td>${a.precoAtual?fmt(a.precoAtual):'<span class="muted">—</span>'}<br><span class="seg muted">${upAt}</span></td>
+        <td>${a.qtd}</td><td class="muted">${fmt(a.precoMedio)}</td>
+        <td>${a.precoAtual?fmt(a.precoAtual):'<span class="muted">—</span>'}<br><span class="seg muted">${up}</span></td>
         <td class="muted">${fmt(inv)}</td>
-        <td class="${atual>=inv?'green':'red'}">${fmt(atual)}</td>
-        <td class="${lucro>=0?'green':'red'}">${fmt(lucro)}</td>
-        <td><span class="badge ${pct>=0?'bp':'bn'}">${fmtP(pct)}</span></td>
-        <td class="${chDay>=0?'green':'red'}" style="font-size:12px">${chDay?fmtP(chDay):'—'}</td>
+        <td class="${at>=inv?'green':'red'}">${fmt(at)}</td>
+        <td class="${l>=0?'green':'red'}">${fmt(l)}</td>
+        <td><span class="badge ${p>=0?'bp':'bn'}">${fmtP(p)}</span></td>
+        <td class="${(a.changeDay||0)>=0?'green':'red'}" style="font-size:12px">${a.changeDay?fmtP(a.changeDay):'—'}</td>
         <td style="white-space:nowrap">
-          <button class="btn-icon" data-id="${a.id}" data-action="edit">✎</button>
-          <button class="btn-icon danger" data-id="${a.id}" data-action="del">✕</button>
+          <button class="btn-icon" onclick="openAtivoModal('${a.id}','${perfil.id}')">✎</button>
+          <button class="btn-icon danger" onclick="deletarAtivo('${a.id}','${perfil.id}')">✕</button>
         </td>`;
-      tbody.appendChild(tr);
+      tb.appendChild(tr);
     });
-    tbody.querySelectorAll('[data-action="edit"]').forEach(b=>b.onclick=()=>openModal(b.dataset.id));
-    tbody.querySelectorAll('[data-action="del"]').forEach(b=>b.onclick=()=>deletarAtivo(b.dataset.id));
 
-    // Gráficos
-    const isDark=window.matchMedia('(prefers-color-scheme:dark)').matches;
-    const gc=isDark?'rgba(255,255,255,.07)':'rgba(0,0,0,.06)';
-    const tc=isDark?'#999':'#666';
-    const tipoKeys=Object.keys(porTipo);
-    const corKeys=Object.keys(porCorretora);
-
+    const tk=Object.keys(porTipo);
     destroyChart('pieChart');
-    charts['pieChart']=new Chart(document.getElementById('pieChart'),{type:'doughnut',data:{labels:tipoKeys,datasets:[{data:tipoKeys.map(k=>porTipo[k]),backgroundColor:tipoKeys.map(k=>TIPO_COLORS[k]||'#94a3b8'),borderWidth:0,hoverOffset:4}]},options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:{position:'bottom',labels:{color:tc,font:{size:11},boxWidth:12}}}}});
+    charts['pieChart']=new Chart(document.getElementById('pieChart'),{type:'doughnut',data:{labels:tk,datasets:[{data:tk.map(k=>porTipo[k]),backgroundColor:tk.map(k=>TIPO_COLORS[k]||'#94a3b8'),borderWidth:0,hoverOffset:4}]},options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:{position:'bottom',labels:{color:tc(),font:{size:11},boxWidth:12}}}}});
 
-    destroyChart('pieCorretora');
-    const corColors=['#3b82f6','#10b981','#f59e0b','#8b5cf6','#f97316','#06b6d4'];
-    charts['pieCorretora']=new Chart(document.getElementById('pieCorretora'),{type:'doughnut',data:{labels:corKeys,datasets:[{data:corKeys.map(k=>porCorretora[k]),backgroundColor:corKeys.map((_,i)=>corColors[i%corColors.length]),borderWidth:0,hoverOffset:4}]},options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:{position:'bottom',labels:{color:tc,font:{size:11},boxWidth:12}}}}});
-
-    const ativosOrdenados=[...carteira].sort((a,b)=>{
-      const pa=a.qtd*a.precoMedio,pb=b.qtd*b.precoMedio;
-      const la=a.qtd*(a.precoAtual||a.precoMedio)-pa, lb=b.qtd*(b.precoAtual||b.precoMedio)-pb;
-      const pctA=pa>0?(la/pa)*100:0, pctB=pb>0?(lb/pb)*100:0;
-      return pctB-pctA;
-    });
+    const ao=[...ativos].sort((a,b)=>{const ia=a.qtd*a.precoMedio,ib=b.qtd*b.precoMedio,la=a.qtd*(a.precoAtual||a.precoMedio)-ia,lb=b.qtd*(b.precoAtual||b.precoMedio)-ib;return (ib>0?(lb/ib):0)-(ia>0?(la/ia):0);});
     destroyChart('barAtivos');
-    charts['barAtivos']=new Chart(document.getElementById('barAtivos'),{type:'bar',data:{labels:ativosOrdenados.map(a=>a.ticker),datasets:[{data:ativosOrdenados.map(a=>{const inv=a.qtd*a.precoMedio,at=a.qtd*(a.precoAtual||a.precoMedio);return inv>0?((at-inv)/inv)*100:0;}),backgroundColor:ativosOrdenados.map(a=>{const inv=a.qtd*a.precoMedio,at=a.qtd*(a.precoAtual||a.precoMedio);return at>=inv?'rgba(16,185,129,.75)':'rgba(239,68,68,.75)';}),borderRadius:3,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:tc,font:{size:10}}},y:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>v.toFixed(1)+'%'}}}}});
+    charts['barAtivos']=new Chart(document.getElementById('barAtivos'),{type:'bar',data:{labels:ao.map(a=>a.ticker),datasets:[{data:ao.map(a=>{const i=a.qtd*a.precoMedio,v=a.qtd*(a.precoAtual||a.precoMedio);return i>0?((v-i)/i)*100:0;}),backgroundColor:ao.map(a=>{const i=a.qtd*a.precoMedio,v=a.qtd*(a.precoAtual||a.precoMedio);return v>=i?'rgba(16,185,129,.75)':'rgba(239,68,68,.75)';}),borderRadius:3,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:tc(),font:{size:10}}},y:{grid:{color:gc()},ticks:{color:tc(),font:{size:10},callback:v=>v.toFixed(1)+'%'}}}}});
+
+    const ap=[...ativos].sort((a,b)=>(b.qtd*(b.precoAtual||b.precoMedio))-(a.qtd*(a.precoAtual||a.precoMedio)));
+    destroyChart('barPatr');
+    charts['barPatr']=new Chart(document.getElementById('barPatr'),{type:'bar',data:{labels:ap.map(a=>a.ticker),datasets:[{data:ap.map(a=>a.qtd*(a.precoAtual||a.precoMedio)),backgroundColor:perfil.cor+'bb',borderRadius:3,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:tc(),font:{size:10}}},y:{grid:{color:gc()},ticks:{color:tc(),font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}}}}});
   }
 }
 
-function openModal(id) {
-  carteiraEditId = id;
-  document.getElementById('modalTitle').textContent = id ? 'Editar ativo' : 'Adicionar ativo';
-  if(id) {
-    const a = carteira.find(x=>x.id===id);
-    if(a){
-      document.getElementById('f_ticker').value    = a.ticker||'';
-      document.getElementById('f_nome').value      = a.nome||'';
-      document.getElementById('f_tipo').value      = a.tipo||'Ação';
-      document.getElementById('f_corretora').value = a.corretora||'';
-      document.getElementById('f_qtd').value       = a.qtd||'';
-      document.getElementById('f_preco').value     = a.precoMedio||'';
-      document.getElementById('f_atual').value     = a.precoAtual||'';
-    }
+// ════════════════════════════════════════════════════════════════
+//  VISÃO CONSOLIDADA
+// ════════════════════════════════════════════════════════════════
+function renderConsolidado(){
+  const el=document.getElementById('tab-consolidado');
+  const tradeLiq = tradePayload?.monthly?.slice(-1)[0]?.acumLiq||0;
+  const tradeInv = tradePayload?.totalAportado||0;
+
+  const rows=[];
+  let totalInvGlobal=tradeInv, totalAtGlobal=tradeLiq;
+
+  perfis.forEach(p=>{
+    const ativos=p.ativos||[];
+    const inv=ativos.reduce((s,a)=>s+(a.qtd*a.precoMedio),0);
+    const at=ativos.reduce((s,a)=>s+(a.qtd*(a.precoAtual||a.precoMedio)),0);
+    totalInvGlobal+=inv; totalAtGlobal+=at;
+    rows.push({nome:p.nome,cor:p.cor,inv,at,lucro:at-inv,pct:inv>0?((at-inv)/inv)*100:0,qtd:ativos.length});
+  });
+
+  const lucroGlobal=totalAtGlobal-totalInvGlobal;
+  const pctGlobal=totalInvGlobal>0?(lucroGlobal/totalInvGlobal)*100:0;
+
+  // Dados para o gráfico de pizza global
+  const pieLabels=['Trade (líq.)', ...perfis.map(p=>p.nome)];
+  const pieVals=[tradeLiq, ...perfis.map(p=>(p.ativos||[]).reduce((s,a)=>s+(a.qtd*(a.precoAtual||a.precoMedio)),0))];
+  const pieColors=['#f59e0b', ...perfis.map(p=>p.cor)];
+
+  el.innerHTML=`
+    <div class="tab-header">
+      <div><h2>Visão Consolidada</h2><p class="sub">Patrimônio total de todas as carteiras</p></div>
+    </div>
+    <div class="metrics">
+      <div class="mc"><div class="ml">Patrimônio total</div><div class="mv ${totalAtGlobal>=totalInvGlobal?'green':'red'}">${fmt(totalAtGlobal)}</div><div class="ms muted">todas as carteiras</div></div>
+      <div class="mc"><div class="ml">Total investido</div><div class="mv neutral">${fmt(totalInvGlobal)}</div><div class="ms muted">capital aportado</div></div>
+      <div class="mc"><div class="ml">Lucro / Prejuízo</div><div class="mv ${lucroGlobal>=0?'green':'red'}">${fmt(lucroGlobal)}</div><div class="ms ${pctGlobal>=0?'green':'red'}">${fmtP(pctGlobal)}</div></div>
+      <div class="mc"><div class="ml">Trade (líq.)</div><div class="mv amber">${fmt(tradeLiq)}</div><div class="ms muted">saldo líquido</div></div>
+    </div>
+    <div class="charts-row two">
+      <div class="card span2">
+        <div class="card-title">Distribuição do patrimônio</div>
+        <div class="cw h240"><canvas id="pieGlobal"></canvas></div>
+      </div>
+      ${rows.map(r=>`
+      <div class="card" style="border-left:3px solid ${r.cor}">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <span class="perfil-badge" style="background:${r.cor}20;color:${r.cor};border:1px solid ${r.cor}40">${r.nome}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div><div class="ml">Investido</div><div style="font-size:15px;font-weight:600">${fmt(r.inv)}</div></div>
+          <div><div class="ml">Valor atual</div><div style="font-size:15px;font-weight:600;color:${r.at>=r.inv?'var(--green)':'var(--red)'}">${fmt(r.at)}</div></div>
+          <div><div class="ml">Lucro</div><div style="font-size:15px;font-weight:600;color:${r.lucro>=0?'var(--green)':'var(--red)'}">${fmt(r.lucro)}</div></div>
+          <div><div class="ml">Rentabilidade</div><span class="badge ${r.pct>=0?'bp':'bn'}">${fmtP(r.pct)}</span></div>
+        </div>
+        <div style="margin-top:10px;font-size:12px;color:var(--muted)">${r.qtd} ativos cadastrados</div>
+      </div>`).join('')}
+      ${tradePayload?`
+      <div class="card" style="border-left:3px solid #f59e0b">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <span class="perfil-badge" style="background:#f59e0b20;color:#f59e0b;border:1px solid #f59e0b40">Trade</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div><div class="ml">Aportado</div><div style="font-size:15px;font-weight:600">${fmt(tradeInv)}</div></div>
+          <div><div class="ml">Saldo líquido</div><div style="font-size:15px;font-weight:600;color:var(--green)">${fmt(tradeLiq)}</div></div>
+          <div><div class="ml">Lucro líquido</div><div style="font-size:15px;font-weight:600;color:var(--green)">${fmt(tradeLiq-tradeInv)}</div></div>
+          <div><div class="ml">Rentabilidade</div><span class="badge bp">${fmtP(tradeInv>0?((tradeLiq-tradeInv)/tradeInv)*100:0)}</span></div>
+        </div>
+      </div>`:''}
+    </div>`;
+
+  destroyChart('pieGlobal');
+  charts['pieGlobal']=new Chart(document.getElementById('pieGlobal'),{type:'doughnut',data:{labels:pieLabels,datasets:[{data:pieVals,backgroundColor:pieColors,borderWidth:0,hoverOffset:6}]},options:{responsive:true,maintainAspectRatio:false,cutout:'55%',plugins:{legend:{position:'right',labels:{color:tc(),font:{size:12},boxWidth:14,padding:14}},tooltip:{callbacks:{label:i=>' '+fmt(i.raw)+' ('+((i.raw/pieVals.reduce((a,b)=>a+b,0))*100).toFixed(1)+'%)'}}}}}});
+}
+
+// ════════════════════════════════════════════════════════════════
+//  CRUD ATIVOS
+// ════════════════════════════════════════════════════════════════
+let editAtivoId=null, editPerfilId=null;
+
+function openAtivoModal(ativoId, perfilId){
+  editAtivoId=ativoId; editPerfilId=perfilId;
+  const perfil=perfis.find(p=>p.id===perfilId);
+  document.getElementById('modalAtivoTitle').textContent=ativoId?'Editar ativo':'Adicionar ativo';
+  document.getElementById('modalAtivoSubtitle').textContent=perfil?.nome||'';
+  if(ativoId){
+    const a=(perfil?.ativos||[]).find(x=>x.id===ativoId);
+    if(a){['ticker','nome','corretora','qtd','preco','atual'].forEach(f=>{const el=document.getElementById('fa_'+f);if(el)el.value=a[f==='ticker'?'ticker':f==='nome'?'nome':f==='corretora'?'corretora':f==='qtd'?'qtd':f==='preco'?'precoMedio':'precoAtual']||'';});document.getElementById('fa_tipo').value=a.tipo||'Ação';}
   } else {
-    ['f_ticker','f_nome','f_corretora','f_qtd','f_preco','f_atual'].forEach(id=>document.getElementById(id).value='');
-    document.getElementById('f_tipo').value='Ação';
+    ['ticker','nome','corretora','qtd','preco','atual'].forEach(f=>{const el=document.getElementById('fa_'+f);if(el)el.value='';});
+    document.getElementById('fa_tipo').value='Ação';
   }
-  document.getElementById('modalOverlay').style.display='flex';
+  document.getElementById('modalAtivo').style.display='flex';
 }
+window.openAtivoModal=openAtivoModal;
 
-function closeModal() { document.getElementById('modalOverlay').style.display='none'; }
+function closeAtivoModal(){document.getElementById('modalAtivo').style.display='none';}
+window.closeAtivoModal=closeAtivoModal;
 
-async function salvarAtivo() {
-  const ticker    = document.getElementById('f_ticker').value.trim().toUpperCase();
-  const nome      = document.getElementById('f_nome').value.trim();
-  const tipo      = document.getElementById('f_tipo').value;
-  const corretora = document.getElementById('f_corretora').value.trim();
-  const qtd       = parseFloat(document.getElementById('f_qtd').value);
-  const preco     = parseFloat(document.getElementById('f_preco').value);
-  const atual     = parseFloat(document.getElementById('f_atual').value)||0;
-  if(!ticker||isNaN(qtd)||isNaN(preco)){ alert('Preencha ticker, quantidade e preço médio.'); return; }
+async function salvarAtivo(){
+  const ticker=document.getElementById('fa_ticker').value.trim().toUpperCase();
+  const nome=document.getElementById('fa_nome').value.trim();
+  const tipo=document.getElementById('fa_tipo').value;
+  const corretora=document.getElementById('fa_corretora').value.trim();
+  const qtd=parseFloat(document.getElementById('fa_qtd').value);
+  const preco=parseFloat(document.getElementById('fa_preco').value);
+  const atual=parseFloat(document.getElementById('fa_atual').value)||0;
+  if(!ticker||isNaN(qtd)||isNaN(preco)){alert('Preencha ticker, quantidade e preço médio.');return;}
   const btn=document.getElementById('btnSalvarAtivo');
   btn.disabled=true; btn.textContent='Salvando...';
-  let precoAtual = atual||0;
-  if(!precoAtual && ['Ação','FII','ETF'].includes(tipo)) {
-    const p = await fetchPrice(ticker);
-    if(p) precoAtual = p.price;
-  }
-  if(carteiraEditId) {
-    const idx=carteira.findIndex(x=>x.id===carteiraEditId);
-    if(idx>=0) carteira[idx]={...carteira[idx],ticker,nome,tipo,corretora,qtd,precoMedio:preco,precoAtual:precoAtual||preco};
+  let precoAtual=atual;
+  if(!precoAtual&&['Ação','FII','ETF'].includes(tipo)){const p=await fetchPrice(ticker);if(p)precoAtual=p.price;}
+  const perfil=perfis.find(p=>p.id===editPerfilId);
+  if(!perfil){btn.disabled=false;btn.textContent='Salvar';return;}
+  if(!perfil.ativos)perfil.ativos=[];
+  if(editAtivoId){
+    const idx=perfil.ativos.findIndex(x=>x.id===editAtivoId);
+    if(idx>=0)perfil.ativos[idx]={...perfil.ativos[idx],ticker,nome,tipo,corretora,qtd,precoMedio:preco,precoAtual:precoAtual||preco,atualizadoEm:Date.now()};
   } else {
-    carteira.push({id:Date.now().toString(),ticker,nome,tipo,corretora,qtd,precoMedio:preco,precoAtual:precoAtual||preco,atualizadoEm:Date.now()});
+    perfil.ativos.push({id:Date.now().toString(),ticker,nome,tipo,corretora,qtd,precoMedio:preco,precoAtual:precoAtual||preco,atualizadoEm:Date.now()});
   }
-  await saveCarteira();
-  closeModal();
-  renderCarteira();
+  await savePerfis();
+  closeAtivoModal();
+  renderCarteiraTab(editPerfilId);
   btn.disabled=false; btn.textContent='Salvar';
 }
+window.salvarAtivo=salvarAtivo;
 
-async function deletarAtivo(id) {
-  if(!confirm('Remover este ativo?')) return;
-  carteira=carteira.filter(a=>a.id!==id);
-  await saveCarteira();
-  renderCarteira();
+async function deletarAtivo(ativoId,perfilId){
+  if(!confirm('Remover este ativo?'))return;
+  const perfil=perfis.find(p=>p.id===perfilId);
+  if(perfil){perfil.ativos=(perfil.ativos||[]).filter(a=>a.id!==ativoId);await savePerfis();renderCarteiraTab(perfilId);}
 }
+window.deletarAtivo=deletarAtivo;
 
-// ════════════════════════════════════════════════════════════════════
+async function refreshPrices(perfilId){
+  const btn=document.getElementById('btnRefresh');
+  if(btn){btn.disabled=true;btn.textContent='Atualizando...';}
+  const perfil=perfis.find(p=>p.id===perfilId);
+  if(perfil){
+    for(let i=0;i<(perfil.ativos||[]).length;i++){
+      const a=perfil.ativos[i];
+      if(['Ação','FII','ETF'].includes(a.tipo)){const p=await fetchPrice(a.ticker);if(p){perfil.ativos[i].precoAtual=p.price;perfil.ativos[i].changeDay=p.change;perfil.ativos[i].atualizadoEm=Date.now();}}
+    }
+    await savePerfis();
+    renderCarteiraTab(perfilId);
+  }
+  if(btn){btn.disabled=false;btn.textContent='↻ Atualizar preços';}
+}
+window.refreshPrices=refreshPrices;
+
+// Renomear perfil
+function openRenamePerfil(id){
+  const p=perfis.find(x=>x.id===id);
+  if(!p)return;
+  const novo=prompt('Novo nome para a carteira:',p.nome);
+  if(novo&&novo.trim()){p.nome=novo.trim();savePerfis().then(()=>{buildNavbar();renderCarteiraTab(id);});}
+}
+window.openRenamePerfil=openRenamePerfil;
+
+// ════════════════════════════════════════════════════════════════
 //  UPLOAD / STATUS
-// ════════════════════════════════════════════════════════════════════
-function showUpload(show) {
-  document.getElementById('upload-overlay').style.display = show ? 'flex' : 'none';
-  if(!show) document.getElementById('main-app').style.display='block';
+// ════════════════════════════════════════════════════════════════
+function showUpload(show){
+  document.getElementById('upload-overlay').style.display=show?'flex':'none';
+  if(!show)document.getElementById('main-app').style.display='block';
 }
+window.showUpload=showUpload;
+function setStatus(msg){const el=document.getElementById('upload-status');if(el)el.textContent=msg;}
 
-function setStatus(msg) { const el=document.getElementById('upload-status'); if(el) el.textContent=msg; }
-
-window.handleFile = async function(e) {
-  const file=e.target.files[0]; if(!file) return;
+window.handleFile=async function(e){
+  const file=e.target.files[0];if(!file)return;
   setStatus('Lendo arquivo...');
   const reader=new FileReader();
   reader.onload=async function(ev){
     try{
       const wb=XLSX.read(ev.target.result,{type:'binary',cellDates:false});
       const payload=parseSheet(wb);
-      if(!payload||!payload.daily.length){ setStatus('Erro: não foi possível ler os dados. Verifique se é a planilha correta (aba "Resultados").'); return; }
+      if(!payload||!payload.daily.length){setStatus('Erro: não foi possível ler os dados. Verifique a planilha (aba "Resultados").');return;}
       setStatus(`Salvando ${payload.daily.length} registros...`);
       await setDoc(doc(db,'investimentos','dashboard'),{payload,updatedAt:Date.now()});
-      setStatus('✓ Atualizado com sucesso!');
+      setStatus('✓ Atualizado!');
       showUpload(false);
-    }catch(err){ setStatus('Erro: '+err.message); }
+    }catch(err){setStatus('Erro: '+err.message);}
   };
   reader.readAsBinaryString(file);
 };
-
 window.handleDrop=function(e){
-  e.preventDefault(); document.getElementById('dropzone').classList.remove('drag');
-  const file=e.dataTransfer.files[0]; if(file) window.handleFile({target:{files:[file]}});
+  e.preventDefault();document.getElementById('dropzone').classList.remove('drag');
+  const file=e.dataTransfer.files[0];if(file)window.handleFile({target:{files:[file]}});
 };
 
-// ════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
 //  INIT
-// ════════════════════════════════════════════════════════════════════
-document.addEventListener('DOMContentLoaded', async () => {
-  // Carrega carteira imediatamente
-  await loadCarteira();
+// ════════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded',async()=>{
+  await loadPerfis();
+  buildNavbar();
+  renderCarteiraTab(perfis[0]?.id);
 
-  // Escuta day trade em tempo real
-  onSnapshot(doc(db,'investimentos','dashboard'), snap => {
+  // Trade — tempo real
+  onSnapshot(doc(db,'investimentos','dashboard'),snap=>{
     document.getElementById('main-app').style.display='block';
     showUpload(false);
     if(snap.exists()){
       const d=snap.data();
-      if(d.payload) renderDayTrade(d.payload,d.updatedAt);
-      else { document.getElementById('tab-daytrade').innerHTML='<div style="text-align:center;padding:3rem;color:var(--muted)"><p style="font-size:32px">📂</p><p>Faça upload da planilha para visualizar o day trade.</p></div>'; }
-    } else {
-      showUpload(true);
+      if(d.payload){
+        tradePayload=d.payload; tradeUpdatedAt=d.updatedAt;
+        if(activeMain==='trade') renderTrade(tradePayload,tradeUpdatedAt);
+        if(activeMain==='consolidado') renderConsolidado();
+      } else { document.getElementById('tab-trade').innerHTML='<div class="empty-state"><p style="font-size:32px">📂</p><p>Faça upload da planilha.</p></div>'; }
+    } else { showUpload(true); }
+  },err=>{showUpload(true);setStatus('Erro: '+err.message);});
+
+  // Perfis — tempo real
+  onSnapshot(doc(db,'investimentos','perfis'),snap=>{
+    if(snap.exists()){
+      perfis=snap.data().lista||[];
+      buildNavbar();
+      if(activeMain==='carteira'&&activeCarteira) renderCarteiraTab(activeCarteira);
+      if(activeMain==='consolidado') renderConsolidado();
     }
-  }, err => { showUpload(true); setStatus('Erro: '+err.message); });
-
-  // Escuta carteira em tempo real
-  onSnapshot(doc(db,'investimentos','carteira'), snap => {
-    if(snap.exists()) { carteira=snap.data().ativos||[]; if(activeTab==='carteira') renderCarteira(); }
   });
 
-  // Render inicial da carteira
-  renderCarteira();
-
-  // Tabs
-  document.querySelectorAll('.nav-tab').forEach(t=>{
-    t.addEventListener('click',()=>{ switchTab(t.dataset.tab); if(t.dataset.tab==='carteira') renderCarteira(); });
-  });
+  // Renderiza trade se já carregado
+  if(tradePayload) renderTrade(tradePayload,tradeUpdatedAt);
+  else {
+    document.getElementById('tab-trade').innerHTML=`<div class="empty-state"><p style="font-size:36px">📂</p><p>Conectando...</p></div>`;
+  }
 });
 </script>
 <style>
@@ -571,34 +620,37 @@ document.addEventListener('DOMContentLoaded', async () => {
 @media(prefers-color-scheme:dark){:root{--bg:#0f172a;--surf:#1e293b;--surf2:#0f172a;--bdr:#334155;--txt:#f1f5f9;--muted:#94a3b8;--green:#34d399;--red:#f87171;--amber:#fbbf24;--blue:#60a5fa}}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--txt);min-height:100vh}
-
-/* UPLOAD OVERLAY */
+/* UPLOAD */
 #upload-overlay{position:fixed;inset:0;background:var(--bg);z-index:100;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:1.25rem;padding:1.5rem}
-.upload-box{background:var(--surf);border:1.5px dashed var(--bdr);border-radius:16px;padding:2.5rem 2rem;text-align:center;max-width:500px;width:100%;transition:border-color .2s}
+.upload-box{background:var(--surf);border:1.5px dashed var(--bdr);border-radius:16px;padding:2.5rem 2rem;text-align:center;max-width:480px;width:100%}
 .upload-box.drag{border-color:var(--blue);background:rgba(37,99,235,.04)}
 .upload-box h2{font-size:17px;font-weight:700;margin-bottom:.4rem}
 .upload-box p{font-size:13px;color:var(--muted);margin-bottom:1.25rem;line-height:1.5}
 .upload-box input{display:none}
-#upload-status{font-size:13px;color:var(--muted);text-align:center;max-width:500px}
-
-/* MAIN APP */
+#upload-status{font-size:13px;color:var(--muted);text-align:center}
+/* MAIN */
 #main-app{display:none;min-height:100vh}
-
 /* NAVBAR */
-.navbar{background:var(--surf);border-bottom:1px solid var(--bdr);padding:0 1.25rem;display:flex;align-items:center;gap:1.5rem;height:52px;position:sticky;top:0;z-index:50}
-.navbar-brand{font-size:14px;font-weight:700;color:var(--txt);white-space:nowrap}
-.nav-tabs{display:flex;gap:4px}
-.nav-tab{font-size:13px;font-weight:500;padding:6px 14px;border-radius:8px;border:none;background:transparent;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:6px;transition:background .15s,color .15s}
+.navbar{background:var(--surf);border-bottom:1px solid var(--bdr);padding:0 1.25rem;display:flex;align-items:center;gap:1rem;height:52px;position:sticky;top:0;z-index:50}
+.navbar-brand{font-size:14px;font-weight:700;white-space:nowrap;margin-right:.5rem}
+#nav-tabs{display:flex;gap:4px;align-items:center}
+.nav-tab{font-size:13px;font-weight:500;padding:6px 14px;border-radius:8px;border:none;background:transparent;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .nav-tab:hover{background:var(--surf2);color:var(--txt)}
 .nav-tab.active{background:var(--surf2);color:var(--txt)}
-.nav-tab .dot{width:7px;height:7px;border-radius:50%}
-
+.dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+/* DROPDOWN */
+.nav-dropdown{position:relative}
+.dropdown-menu{position:absolute;top:calc(100% + 6px);left:0;background:var(--surf);border:1px solid var(--bdr);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.12);min-width:220px;padding:6px;z-index:99}
+.dd-item{width:100%;display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;border:none;background:transparent;color:var(--txt);font-size:13px;cursor:pointer;text-align:left}
+.dd-item:hover{background:var(--surf2)}
+.dd-item.active{background:var(--surf2);font-weight:600}
+.dd-count{margin-left:auto;font-size:11px;color:var(--muted)}
+.dd-divider{border-top:1px solid var(--bdr);margin:4px 0}
 /* CONTENT */
 .content{padding:1.25rem;max-width:1300px;margin:0 auto}
 .tab-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:.75rem}
 .tab-header h2{font-size:18px;font-weight:700}
 .tab-header .sub{font-size:11px;color:var(--muted);margin-top:3px}
-
 /* METRICS */
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px;margin-bottom:1.25rem}
 .mc{background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:.9rem 1rem}
@@ -606,16 +658,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .ml{font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;font-weight:600}
 .mv{font-size:19px;font-weight:700}.ms{font-size:11px;margin-top:3px}
 .green{color:var(--green)}.red{color:var(--red)}.amber{color:var(--amber)}.muted{color:var(--muted)}.neutral{color:var(--txt)}
-
 /* CARDS */
 .card{background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:1.1rem 1.25rem;margin-bottom:1rem}
 .card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:.5rem}
 .card-title{font-size:13px;font-weight:600;color:var(--txt);margin-bottom:10px}
-.charts-row{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:0}
+.charts-row{display:grid;gap:1rem;margin-bottom:0}
+.charts-row.two{grid-template-columns:repeat(2,1fr)}
+.charts-row.three{grid-template-columns:repeat(3,1fr)}
 .charts-row .span2{grid-column:1/-1}
-@media(max-width:900px){.charts-row{grid-template-columns:1fr}.charts-row .span2{grid-column:auto}}
-.cw{position:relative}.h240{height:240px}.h200{height:200px}.h130{height:130px}
-
+@media(max-width:900px){.charts-row.two,.charts-row.three{grid-template-columns:1fr}.span2{grid-column:auto}}
+.cw{position:relative}.h240{height:240px}.h200{height:200px}.h180{height:180px}.h130{height:130px}
 /* BUTTONS */
 .btn{display:inline-flex;align-items:center;gap:6px;padding:9px 20px;border-radius:8px;border:1px solid var(--bdr);background:var(--surf2);color:var(--txt);font-size:13px;cursor:pointer;font-weight:500}
 .btn:hover{background:var(--bdr)}
@@ -623,15 +675,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .btn-outline:hover{background:var(--surf2)}
 .btn-primary{display:inline-flex;align-items:center;gap:5px;padding:7px 16px;border-radius:8px;border:none;background:var(--blue);color:#fff;font-size:13px;cursor:pointer;font-weight:500}
 .btn-primary:hover{opacity:.9}
+.btn-ghost{display:inline-flex;align-items:center;gap:5px;padding:6px 12px;border-radius:8px;border:none;background:transparent;color:var(--muted);font-size:12px;cursor:pointer}
+.btn-ghost:hover{background:var(--surf2);color:var(--txt)}
 .btn-icon{padding:4px 8px;border-radius:6px;border:1px solid var(--bdr);background:transparent;color:var(--muted);cursor:pointer;font-size:13px;margin-left:2px}
 .btn-icon:hover{background:var(--surf2);color:var(--txt)}
 .btn-icon.danger:hover{background:#fee2e2;color:var(--red);border-color:#fca5a5}
-
 /* TABS */
 .tabs{display:flex;gap:4px}
 .tab{font-size:11px;padding:3px 10px;border-radius:20px;cursor:pointer;background:transparent;border:1px solid var(--bdr);color:var(--muted);font-weight:500}
 .tab.active{background:var(--surf2);color:var(--txt);border-color:var(--txt)}
-
 /* TABLE */
 .table-wrap{overflow-x:auto;max-height:460px;overflow-y:auto}
 table{width:100%;border-collapse:collapse;font-size:13px}
@@ -645,14 +697,16 @@ tr:hover td{background:var(--surf2)}
 .bp{background:#dcfce7;color:#166534}.bn{background:#fee2e2;color:#991b1b}
 @media(prefers-color-scheme:dark){.bp{background:#14532d;color:#86efac}.bn{background:#7f1d1d;color:#fca5a5}}
 .tipo-badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px}
+.perfil-badge{display:inline-block;font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px}
 .seg{font-size:11px;color:var(--muted)}
-
-/* MODAL */
+.empty-state{text-align:center;padding:2.5rem;color:var(--muted)}
+/* MODAIS */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;display:flex;align-items:center;justify-content:center;padding:1rem}
-.modal{background:var(--surf);border-radius:16px;width:100%;max-width:520px;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+.modal{background:var(--surf);border-radius:16px;width:100%;max-width:520px;box-shadow:0 20px 60px rgba(0,0,0,.2);max-height:90vh;overflow-y:auto}
 .modal-header{display:flex;align-items:center;justify-content:space-between;padding:1.1rem 1.25rem;border-bottom:1px solid var(--bdr)}
 .modal-header h3{font-size:15px;font-weight:700}
-.modal-close{background:transparent;border:none;font-size:18px;cursor:pointer;color:var(--muted);line-height:1}
+.modal-subtitle{font-size:12px;color:var(--muted);margin-top:2px}
+.modal-close{background:transparent;border:none;font-size:18px;cursor:pointer;color:var(--muted)}
 .modal-body{padding:1.25rem}
 .modal-footer{display:flex;justify-content:flex-end;gap:8px;padding:1rem 1.25rem;border-top:1px solid var(--bdr)}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -662,6 +716,7 @@ tr:hover td{background:var(--surf2)}
 .form-group input,.form-group select{padding:8px 10px;border-radius:8px;border:1px solid var(--bdr);background:var(--surf2);color:var(--txt);font-size:13px;outline:none}
 .form-group input:focus,.form-group select:focus{border-color:var(--blue)}
 .form-hint{font-size:11px;color:var(--muted)}
+.color-preview{width:28px;height:28px;border-radius:6px;border:2px solid var(--bdr);cursor:pointer}
 </style>
 </head>
 <body>
@@ -674,7 +729,7 @@ tr:hover td{background:var(--surf2)}
     ondrop="handleDrop(event)">
     <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="1.5" style="margin-bottom:.9rem"><path d="M9 17H7A5 5 0 017 7h.5M15 17h2A5 5 0 0017 7h-.5M12 12v9M9 18l3 3 3-3"/></svg>
     <h2>Dashboard de Investimentos</h2>
-    <p>Faça o upload da planilha do day trade para começar.<br>A carteira de ativos é gerenciada diretamente na ferramenta.</p>
+    <p>Faça o upload da planilha do trade para começar.<br>As carteiras de ativos são gerenciadas diretamente na ferramenta.</p>
     <input type="file" id="fileInput" accept=".xlsx,.xls" onchange="handleFile(event)">
     <button class="btn" onclick="document.getElementById('fileInput').click()">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -688,18 +743,61 @@ tr:hover td{background:var(--surf2)}
 <div id="main-app">
   <nav class="navbar">
     <span class="navbar-brand">📊 Investimentos</span>
-    <div class="nav-tabs">
-      <button class="nav-tab active" data-tab="daytrade">
-        <span class="dot" style="background:#f59e0b"></span> Day Trade
-      </button>
-      <button class="nav-tab" data-tab="carteira">
-        <span class="dot" style="background:#3b82f6"></span> Carteira
-      </button>
-    </div>
+    <div id="nav-tabs"></div>
   </nav>
   <div class="content">
-    <div id="tab-daytrade"></div>
+    <div id="tab-trade"></div>
     <div id="tab-carteira" style="display:none"></div>
+    <div id="tab-consolidado" style="display:none"></div>
+  </div>
+</div>
+
+<!-- MODAL ATIVO -->
+<div class="modal-overlay" id="modalAtivo" style="display:none" onclick="if(event.target===this)closeAtivoModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <div><h3 id="modalAtivoTitle">Adicionar ativo</h3><div class="modal-subtitle" id="modalAtivoSubtitle"></div></div>
+      <button class="modal-close" onclick="closeAtivoModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group span2">
+          <label>Ticker / Código</label>
+          <input id="fa_ticker" placeholder="ex: ITUB4, XPML11, BTC" style="text-transform:uppercase">
+          <span class="form-hint">Para ações e FIIs, o preço atual será buscado automaticamente.</span>
+        </div>
+        <div class="form-group"><label>Nome / Descrição</label><input id="fa_nome" placeholder="ex: Itaú Unibanco"></div>
+        <div class="form-group"><label>Tipo</label><select id="fa_tipo">${TIPO_OPTIONS.map(t=>`<option>${t}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Corretora</label><input id="fa_corretora" placeholder="ex: Rico, Agora"></div>
+        <div class="form-group"><label>Quantidade</label><input id="fa_qtd" type="number" placeholder="ex: 100" min="0" step="0.01"></div>
+        <div class="form-group"><label>Preço médio (R$)</label><input id="fa_preco" type="number" placeholder="ex: 28.50" min="0" step="0.01"></div>
+        <div class="form-group"><label>Preço atual (R$) <span style="font-weight:400;font-size:10px">(opcional)</span></label><input id="fa_atual" type="number" placeholder="buscado automaticamente" min="0" step="0.01"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-outline" onclick="closeAtivoModal()">Cancelar</button>
+      <button class="btn-primary" id="btnSalvarAtivo" onclick="salvarAtivo()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL NOVO PERFIL -->
+<div class="modal-overlay" id="modalNovoPerfil" style="display:none" onclick="if(event.target===this)closeNovoPerfil()">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Nova carteira</h3>
+      <button class="modal-close" onclick="closeNovoPerfil()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group span2"><label>Nome da carteira</label><input id="npNome" placeholder="ex: Carteira João, Previdência..."></div>
+        <div class="form-group"><label>Cor</label><input type="color" id="npCor" value="#3b82f6" style="padding:4px;height:38px;width:100%;border-radius:8px;border:1px solid var(--bdr);background:var(--surf2);cursor:pointer"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-outline" onclick="closeNovoPerfil()">Cancelar</button>
+      <button class="btn-primary" onclick="salvarNovoPerfil()">Criar carteira</button>
+    </div>
   </div>
 </div>
 
