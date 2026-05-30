@@ -666,35 +666,55 @@ function parsearAGORA(workbook) {
 
 function parsearRICO(workbook) {
   const ws = workbook.Sheets[workbook.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  // Usa sheet_to_json SEM cellDates para receber tudo como string/número puro
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
   const resultados = [];
-  const reProvento = /^(DIVIDENDOS?|RENDIMENTOS?|JUROS\s+S\/.{0,10}CAPITAL)\s+DE\s+CLIENTES\s+([A-Z]{4,6}\d{0,2})\s+S\/\s+(\d+)/i;
-  const ignorar = /DAY.TRADE|AJUSTE|LIQUIDO\s+DAS|BM&F|BMF|IRRF|TED\s+BCO|MULTA|PIS\s+E\s+COFINS|SALDO\s+DEVEDOR/i;
+
+  const ignorar = ['DAY TRADE','DAY-TRADE','AJUSTE','BM&F','IRRF','TED BCO','MULTA','PIS E COFINS','SALDO DEVEDOR','LIQUIDO DAS'];
 
   rows.forEach(row => {
-    const dataRaw = row[1], desc = String(row[3] || ''), valorRaw = row[5];
-    if (!desc || !valorRaw) return;
-    if (ignorar.test(desc)) return;
+    // Rico: col0=vazio, col1=data movim, col2=data liquid, col3=descrição, col4=vazio, col5=valor
+    const descRaw = String(row[3] || '').trim();
+    const valorRaw = row[5];
+    if (!descRaw || !valorRaw) return;
+
+    const desc = descRaw.toUpperCase().replace(/\s+/g, ' '); // normaliza espaços múltiplos
+    if (ignorar.some(i => desc.includes(i))) return;
+
+    // Checa se é provento
+    const isRend = desc.includes('RENDIMENTOS DE CLIENTES') || desc.includes('RENDIMENTO DE CLIENTES');
+    const isDiv  = desc.includes('DIVIDENDOS DE CLIENTES') || desc.includes('DIVIDENDO DE CLIENTES');
+    const isJCP  = desc.includes('JUROS S/ CAPITAL DE CLIENTES') || desc.includes('JUROS SOBRE CAPITAL');
+    if (!isRend && !isDiv && !isJCP) return;
+
     const valor = parseFloat(String(valorRaw).replace(',','.'));
     if (isNaN(valor) || valor <= 0) return;
-    const m = desc.match(reProvento);
-    if (!m) return;
-    const tipoRaw = m[1].toUpperCase();
-    const ticker  = m[2].toUpperCase();
-    const qtd     = parseInt(m[3]) || 0;
-    const provento = tipoRaw.startsWith('JUROS') ? 'JCP'
-                   : tipoRaw.startsWith('REND')  ? 'Rendimento'
-                   : 'Dividendo';
+
+    // Extrai ticker: palavra após "CLIENTES " (4-6 letras + 0-2 números)
+    const mTicker = desc.match(/CLIENTES\s+([A-Z]{4,6}\d{0,2})/);
+    if (!mTicker) return;
+    const ticker = mTicker[1];
+
+    // Extrai qtd: número após "S/ " no final
+    const mQtd = desc.match(/S\/\s*(\d+)\s*$/);
+    const qtd = mQtd ? parseInt(mQtd[1]) : 0;
+
+    const provento = isJCP ? 'JCP' : isRend ? 'Rendimento' : 'Dividendo';
+
+    // Data: col1 com raw:false vem como string "DD/MM/YYYY" ou número serial
     let data = '';
-    if (dataRaw instanceof Date) {
-      data = dataRaw.toISOString().substring(0,10);
-    } else if (typeof dataRaw === 'string' && dataRaw.includes('/')) {
+    const dataRaw = row[1];
+    if (typeof dataRaw === 'string' && dataRaw.includes('/')) {
       const parts = dataRaw.split('/');
-      data = `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
-    } else if (typeof dataRaw === 'number') {
-      const d = new Date(Math.round((dataRaw - 25569)*86400*1000));
+      if (parts.length === 3) data = `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+    } else if (typeof dataRaw === 'string' && dataRaw.match(/\d{4}-\d{2}-\d{2}/)) {
+      data = dataRaw.substring(0,10);
+    } else if (typeof dataRaw === 'number' && dataRaw > 40000) {
+      // Serial date Excel → JS Date
+      const d = new Date(Math.round((dataRaw - 25569) * 86400 * 1000));
       data = d.toISOString().substring(0,10);
     }
+
     if (data && ticker) resultados.push({ ticker, provento, data, total: valor, qtd });
   });
   return resultados;
