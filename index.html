@@ -666,53 +666,50 @@ function parsearAGORA(workbook) {
 
 function parsearRICO(workbook) {
   const ws = workbook.Sheets[workbook.SheetNames[0]];
-  // Usa sheet_to_json SEM cellDates para receber tudo como string/número puro
+  // raw:false → tudo como string, sem objetos Date
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
   const resultados = [];
 
-  const ignorar = ['DAY TRADE','DAY-TRADE','AJUSTE','BM&F','IRRF','TED BCO','MULTA','PIS E COFINS','SALDO DEVEDOR','LIQUIDO DAS'];
+  // Palavras-chave que identificam proventos (aceita somente estas)
+  const PROVENTOS = ['RENDIMENTOS DE CLIENTES', 'DIVIDENDOS DE CLIENTES', 'JUROS S/ CAPITAL DE CLIENTES'];
 
   rows.forEach(row => {
-    // Rico: col0=vazio, col1=data movim, col2=data liquid, col3=descrição, col4=vazio, col5=valor
-    const descRaw = String(row[3] || '').trim();
-    const valorRaw = row[5];
-    if (!descRaw || !valorRaw) return;
+    // Novo formato simplificado: col0=data, col1=descrição, col2=valor
+    const dataRaw  = String(row[0] || '').trim();
+    const descRaw  = String(row[1] || '').trim();
+    const valorRaw = row[2];
 
-    const desc = descRaw.toUpperCase().replace(/\s+/g, ' '); // normaliza espaços múltiplos
-    if (ignorar.some(i => desc.includes(i))) return;
+    if (!dataRaw || !descRaw || valorRaw === '' || valorRaw === undefined) return;
 
-    // Checa se é provento
-    const isRend = desc.includes('RENDIMENTOS DE CLIENTES') || desc.includes('RENDIMENTO DE CLIENTES');
-    const isDiv  = desc.includes('DIVIDENDOS DE CLIENTES') || desc.includes('DIVIDENDO DE CLIENTES');
-    const isJCP  = desc.includes('JUROS S/ CAPITAL DE CLIENTES') || desc.includes('JUROS SOBRE CAPITAL');
-    if (!isRend && !isDiv && !isJCP) return;
+    const desc = descRaw.toUpperCase().replace(/\s+/g, ' ');
 
-    const valor = parseFloat(String(valorRaw).replace(',','.'));
-    if (isNaN(valor) || valor <= 0) return;
+    // Só processa linhas que sejam proventos
+    const tipoProvento = PROVENTOS.find(p => desc.includes(p));
+    if (!tipoProvento) return;
 
-    // Extrai ticker: palavra após "CLIENTES " (4-6 letras + 0-2 números)
+    // Valor em centavos → reais
+    const valorBruto = parseFloat(String(valorRaw).replace(',','.'));
+    if (isNaN(valorBruto) || valorBruto <= 0) return;
+    const valor = valorBruto / 100;
+
+    // Ticker: palavra logo após "CLIENTES "
     const mTicker = desc.match(/CLIENTES\s+([A-Z]{4,6}\d{0,2})/);
     if (!mTicker) return;
     const ticker = mTicker[1];
 
-    // Extrai qtd: número após "S/ " no final
+    // Qtd: número após "S/ " no final da descrição
     const mQtd = desc.match(/S\/\s*(\d+)\s*$/);
     const qtd = mQtd ? parseInt(mQtd[1]) : 0;
 
-    const provento = isJCP ? 'JCP' : isRend ? 'Rendimento' : 'Dividendo';
+    const provento = tipoProvento.includes('JUROS') ? 'JCP'
+                   : tipoProvento.includes('REND')  ? 'Rendimento'
+                   : 'Dividendo';
 
-    // Data: col1 com raw:false vem como string "DD/MM/YYYY" ou número serial
+    // Converte data DD/MM/YYYY → YYYY-MM-DD
     let data = '';
-    const dataRaw = row[1];
-    if (typeof dataRaw === 'string' && dataRaw.includes('/')) {
+    if (dataRaw.includes('/')) {
       const parts = dataRaw.split('/');
       if (parts.length === 3) data = `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
-    } else if (typeof dataRaw === 'string' && dataRaw.match(/\d{4}-\d{2}-\d{2}/)) {
-      data = dataRaw.substring(0,10);
-    } else if (typeof dataRaw === 'number' && dataRaw > 40000) {
-      // Serial date Excel → JS Date
-      const d = new Date(Math.round((dataRaw - 25569) * 86400 * 1000));
-      data = d.toISOString().substring(0,10);
     }
 
     if (data && ticker) resultados.push({ ticker, provento, data, total: valor, qtd });
@@ -722,10 +719,15 @@ function parsearRICO(workbook) {
 
 function detectarCorretora(workbook) {
   const ws = workbook.Sheets[workbook.SheetNames[0]];
-  // Usa sheet_to_csv para evitar que Date objects virem [object Object] no join
   const csv = XLSX.utils.sheet_to_csv(ws).toUpperCase();
-  const primeiras = csv.split('\n').slice(0, 25).join(' ');
-  if (primeiras.includes('RENDIMENTOS DE CLIENTES') || primeiras.includes('DIVIDENDOS DE CLIENTES') || primeiras.includes('CONTA RICO')) return 'RICO';
+  // Verifica as primeiras 40 linhas para detectar a corretora
+  const primeiras = csv.split('\n').slice(0, 40).join(' ');
+  // Rico: tem "RENDIMENTOS DE CLIENTES" ou "DIVIDENDOS DE CLIENTES" ou "CONTA RICO"
+  // Também aceita o formato simplificado onde col0=Data col1=Descrição col2=Valor
+  if (primeiras.includes('RENDIMENTOS DE CLIENTES') ||
+      primeiras.includes('DIVIDENDOS DE CLIENTES') ||
+      primeiras.includes('JUROS S/ CAPITAL DE CLIENTES') ||
+      primeiras.includes('CONTA RICO')) return 'RICO';
   return 'AGORA';
 }
 
