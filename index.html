@@ -106,8 +106,19 @@ tr:hover td{background:var(--surf2)}
 .auto-badge{font-size:10px;padding:2px 7px;border-radius:20px;background:#dcfce7;color:#166534;font-weight:600;margin-left:6px}
 @media(prefers-color-scheme:dark){.auto-badge{background:#14532d;color:#86efac}}
 /* DIV CARD */
-.div-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:.5px solid var(--bdr);font-size:13px}
+.div-row{display:flex;align-items:center;justify-content:space-between;padding:12px 4px;border-bottom:.5px solid var(--bdr);font-size:13px;gap:12px}
 .div-row:last-child{border-bottom:none}
+.div-row-left{display:flex;flex-direction:column;gap:5px}
+.div-row-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;min-width:120px}
+.div-valor{font-weight:700;font-size:15px;color:var(--purple,#7c3aed)}
+.div-meta{font-size:11px;color:var(--muted);line-height:1.5}
+.div-ir{font-size:11px;color:var(--red,#ef4444)}
+/* Scrollbar customizada */
+.divs-scroll{max-height:300px;overflow-y:auto;padding-right:4px}
+.divs-scroll::-webkit-scrollbar{width:4px}
+.divs-scroll::-webkit-scrollbar-track{background:transparent}
+.divs-scroll::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:4px}
+.divs-scroll::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 </style>
 </head>
 <body>
@@ -799,19 +810,21 @@ function renderDivsResult(resultados) {
     <div class="g2" style="margin-bottom:1rem">
       <div class="card">
         <div class="card-title">Últimos proventos recebidos</div>
-        <div style="max-height:240px;overflow-y:auto">
+        <div class="divs-scroll">
           ${resultados.slice(0,15).map(r=>`
           <div class="div-row">
-            <div>
-              <strong>${r.ticker}</strong>
-              <span class="badge bpurple" style="font-size:10px;margin-left:4px">${r.provento}</span>
-              ${r.isento?'<span style="font-size:10px;color:var(--green);margin-left:4px">isento</span>':''}
+            <div class="div-row-left">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                <strong style="font-size:14px">${r.ticker}</strong>
+                <span class="badge bpurple" style="font-size:10px">${r.provento}</span>
+                ${r.isento?'<span style="font-size:10px;font-weight:600;color:#16a34a;background:#dcfce755;padding:1px 6px;border-radius:20px">isento IR</span>':''}
+              </div>
+              <div class="div-meta">${r.qtd} cotas &nbsp;×&nbsp; ${fmt(r.valorCota)}/cota</div>
+              ${!r.isento?`<div class="div-ir">IR retido: ${fmt(r.ir)}</div>`:''}
             </div>
-            <div style="text-align:right">
-              <div class="purple" style="font-weight:700;font-size:14px">${fmt(r.liquido)}</div>
-              <div class="seg">${r.qtd} cotas × ${fmt(r.valorCota)}</div>
-              ${!r.isento?`<div class="seg red">IR retido: ${fmt(r.ir)}</div>`:''}
-              <div class="seg">${r.data}</div>
+            <div class="div-row-right">
+              <div class="div-valor">${fmt(r.liquido)}</div>
+              <div class="div-meta">${r.data.split('-').reverse().join('/')}</div>
             </div>
           </div>`).join('')}
         </div>
