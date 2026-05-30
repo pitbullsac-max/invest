@@ -626,29 +626,39 @@ window.CART={
   }
 };
 
-// ── DIVIDENDOS v3.0 ────────────────────────────────────────
-// Busca via Yahoo Finance (sem token, sem limite de tickers)
+// ── DIVIDENDOS v4.0 ────────────────────────────────────────
+// Busca via brapi.dev com token autenticado via Authorization header
+const BRAPI_TOKEN = '5Bri8ThQpzR7XDnuLGqxJW';
+
 async function fetchDivsBrapi(ticker, tipo) {
   const results = [];
   try {
-    // Yahoo Finance usa sufixo .SA para ativos brasileiros
-    const yTicker = encodeURIComponent(ticker + '.SA');
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yTicker}?interval=1d&range=5y&events=dividends`;
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const data = await resp.json();
-    const events = data?.chart?.result?.[0]?.events?.dividends;
-    if (events && typeof events === 'object') {
-      Object.values(events).forEach(d => {
-        const dataPag = new Date(d.date * 1000).toISOString().substring(0, 10);
-        const valor = parseFloat(d.amount) || 0;
-        const label = tipo === 'FII' ? 'Rendimento' : 'Dividendo';
-        if (valor > 0) results.push({ data: dataPag, valorCota: valor, tipo: label });
-      });
-      // Ordena do mais recente para o mais antigo
-      results.sort((a, b) => b.data.localeCompare(a.data));
+    const url = `https://brapi.dev/api/quote/${encodeURIComponent(ticker)}?dividends=true`;
+    const resp = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${BRAPI_TOKEN}` }
+    });
+    // Debug: loga status e corpo do erro se houver
+    if (!resp.ok) {
+      const txt = await resp.text().catch(()=>'');
+      console.warn(`brapi ${ticker} → HTTP ${resp.status}`, txt.substring(0,200));
+      throw new Error('HTTP ' + resp.status);
     }
-  } catch(e) { console.warn('yahoo dividendos', ticker, e.message); }
+    const data = await resp.json();
+    const q = data.results && data.results[0];
+    if (!q) { console.warn(`brapi ${ticker} → sem resultado no JSON`); return results; }
+    const cash = q.dividendsData && q.dividendsData.cashDividends;
+    if (Array.isArray(cash) && cash.length > 0) {
+      cash.forEach(d => {
+        const dataPag = d.paymentDate || d.approvedOn || d.lastDatePrior || '';
+        const valor = parseFloat(d.rate) || 0;
+        const label = d.label || (tipo === 'FII' ? 'Rendimento' : 'Dividendo');
+        if (valor > 0 && dataPag) results.push({ data: dataPag.substring(0,10), valorCota: valor, tipo: label });
+      });
+      results.sort((a, b) => b.data.localeCompare(a.data));
+    } else {
+      console.warn(`brapi ${ticker} → cashDividends vazio ou ausente`, q.dividendsData);
+    }
+  } catch(e) { console.warn('brapi dividendos erro', ticker, e.message); }
   return results;
 }
 
@@ -657,7 +667,7 @@ window.DIVS = {
     const btn = document.getElementById('btnDivs');
     const container = document.getElementById('divsContent');
     if (btn) { btn.disabled = true; btn.textContent = 'Buscando...'; }
-    container.innerHTML = `<div class="empty" style="padding:1.5rem"><div style="font-size:24px;margin-bottom:.5rem">⏳</div><p>Buscando proventos no Yahoo Finance...</p></div>`;
+    container.innerHTML = `<div class="empty" style="padding:1.5rem"><div style="font-size:24px;margin-bottom:.5rem">⏳</div><p>Buscando proventos na brapi.dev...</p></div>`;
 
     const perfil = S.perfis.find(p => p.id === perfilId);
     const ativos = (perfil?.ativos || []).filter(a => ['Ação','FII','ETF'].includes(a.tipo));
@@ -696,7 +706,7 @@ window.DIVS = {
 
     if (!resultados.length) {
       container.innerHTML = `<div class="empty" style="padding:1.5rem">
-        <p style="font-size:14px;font-weight:600">Nenhum provento retornado pela API</p>
+        <p style="font-size:14px;font-weight:600">Nenhum provento retornado pela API</p><p style="font-size:12px;margin-top:.5rem;color:var(--muted)">Abra o console do navegador (F12) para ver o detalhe do erro.</p>
 
       </div>`;
       if (btn) { btn.disabled = false; btn.textContent = '↻ Buscar proventos'; }
