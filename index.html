@@ -626,39 +626,69 @@ window.CART={
   }
 };
 
-// ── DIVIDENDOS v4.0 ────────────────────────────────────────
-// Busca via brapi.dev com token autenticado via Authorization header
-const BRAPI_TOKEN = '5Bri8ThQpzR7XDnuLGqxJW';
+// ── DIVIDENDOS v5.0 ────────────────────────────────────────
+// Busca via API pública do Status Invest (sem token, sem autenticação)
+// Funciona para Ações, FIIs e ETFs da B3
 
 async function fetchDivsBrapi(ticker, tipo) {
   const results = [];
+
+  // Estratégia 1: Status Invest via allOrigins proxy (evita CORS)
   try {
-    const url = `https://brapi.dev/api/quote/${encodeURIComponent(ticker)}?dividends=true`;
-    const resp = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${BRAPI_TOKEN}` }
-    });
-    // Debug: loga status e corpo do erro se houver
-    if (!resp.ok) {
-      const txt = await resp.text().catch(()=>'');
-      console.warn(`brapi ${ticker} → HTTP ${resp.status}`, txt.substring(0,200));
-      throw new Error('HTTP ' + resp.status);
+    const siUrl = tipo === 'FII'
+      ? `https://statusinvest.com.br/fundo-imobiliario/payoutresult?code=${ticker}&type=1`
+      : `https://statusinvest.com.br/acao/payoutresult?code=${ticker}&type=1`;
+    const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(siUrl)}`;
+    const resp = await fetch(proxy);
+    if (resp.ok) {
+      const outer = await resp.json();
+      const data = JSON.parse(outer.contents);
+      // Status Invest retorna array de { pd (paymentDate), v (value), et (label) }
+      if (Array.isArray(data) && data.length > 0) {
+        data.forEach(d => {
+          const valor = parseFloat(d.v) || 0;
+          const dataPag = (d.pd || d.ed || '').substring(0, 10).split('/').reverse().join('-');
+          const label = d.et || (tipo === 'FII' ? 'Rendimento' : 'Dividendo');
+          if (valor > 0 && dataPag) results.push({ data: dataPag, valorCota: valor, tipo: label });
+        });
+        results.sort((a, b) => b.data.localeCompare(a.data));
+        if (results.length > 0) return results;
+      }
     }
-    const data = await resp.json();
-    const q = data.results && data.results[0];
-    if (!q) { console.warn(`brapi ${ticker} → sem resultado no JSON`); return results; }
-    const cash = q.dividendsData && q.dividendsData.cashDividends;
-    if (Array.isArray(cash) && cash.length > 0) {
-      cash.forEach(d => {
-        const dataPag = d.paymentDate || d.approvedOn || d.lastDatePrior || '';
-        const valor = parseFloat(d.rate) || 0;
-        const label = d.label || (tipo === 'FII' ? 'Rendimento' : 'Dividendo');
-        if (valor > 0 && dataPag) results.push({ data: dataPag.substring(0,10), valorCota: valor, tipo: label });
-      });
-      results.sort((a, b) => b.data.localeCompare(a.data));
-    } else {
-      console.warn(`brapi ${ticker} → cashDividends vazio ou ausente`, q.dividendsData);
-    }
-  } catch(e) { console.warn('brapi dividendos erro', ticker, e.message); }
+  } catch(e) { console.warn('statusinvest', ticker, e.message); }
+
+  // Estratégia 2: Fundamentus (ações) via allOrigins proxy
+  if (tipo !== 'FII') {
+    try {
+      const fuUrl = `https://www.fundamentus.com.br/proventos.php?papel=${ticker}&tipo=2`;
+      const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(fuUrl)}`;
+      const resp = await fetch(proxy);
+      if (resp.ok) {
+        const outer = await resp.json();
+        const html = outer.contents;
+        // Parseia tabela HTML de proventos
+        const rows = [...html.matchAll(/<tr[^>]*>[\s\S]*?<\/tr>/gi)];
+        rows.forEach(([row]) => {
+          const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(m =>
+            m[1].replace(/<[^>]+>/g,'').trim()
+          );
+          if (cells.length >= 3) {
+            const rawDate = cells[0]; // DD/MM/YYYY
+            const valor = parseFloat(cells[1]?.replace(',','.')) || 0;
+            const label = cells[2] || 'Dividendo';
+            if (valor > 0 && rawDate.match(/\d{2}\/\d{2}\/\d{4}/)) {
+              const dataPag = rawDate.split('/').reverse().join('-');
+              results.push({ data: dataPag, valorCota: valor, tipo: label });
+            }
+          }
+        });
+        results.sort((a, b) => b.data.localeCompare(a.data));
+        if (results.length > 0) return results;
+      }
+    } catch(e) { console.warn('fundamentus', ticker, e.message); }
+  }
+
+  console.warn(`Nenhuma fonte retornou dividendos para ${ticker}`);
   return results;
 }
 
@@ -706,7 +736,7 @@ window.DIVS = {
 
     if (!resultados.length) {
       container.innerHTML = `<div class="empty" style="padding:1.5rem">
-        <p style="font-size:14px;font-weight:600">Nenhum provento retornado pela API</p><p style="font-size:12px;margin-top:.5rem;color:var(--muted)">Abra o console do navegador (F12) para ver o detalhe do erro.</p>
+        <p style="font-size:14px;font-weight:600">Nenhum provento retornado pela API</p><p style="font-size:12px;margin-top:.5rem;color:var(--muted)">Verifique se os tickers estão cadastrados corretamente.</p>
 
       </div>`;
       if (btn) { btn.disabled = false; btn.textContent = '↻ Buscar proventos'; }
