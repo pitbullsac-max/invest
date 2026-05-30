@@ -539,10 +539,10 @@ window.CART={
       </div>
       <div class="card">
         <div class="card-header"><span class="card-title">💰 Dividendos e Proventos</span>
-          <label class="btn-sm" id="btnDivs" style="cursor:pointer" for="pdfDivsInput">📄 Importar extrato PDF</label>
-          <input type="file" id="pdfDivsInput" accept="application/pdf" style="display:none" onchange="DIVS.loadPDF(this.files[0], '${perfilId}')">
+          <label class="btn-sm" id="btnDivs" style="cursor:pointer" for="xlsxDivsInput">📊 Importar extrato XLSX</label>
+          <input type="file" id="xlsxDivsInput" accept=".xlsx,.xls" style="display:none" onchange="DIVS.loadXLSX(this.files[0], '${perfilId}')">
         </div>
-        <div id="divsContent"><div class="empty" style="padding:1.5rem"><p style="font-size:13px">Importe o extrato de proventos da sua corretora (Agora, Rico, XP, etc.) em PDF. A IA extrai os dados automaticamente.</p></div></div>
+        <div id="divsContent"><div class="empty" style="padding:1.5rem"><p style="font-size:13px">Importe o extrato da Agora ou Rico em formato XLSX. Os proventos são extraídos automaticamente.</p></div></div>
       </div>
     `;
 
@@ -627,49 +627,138 @@ window.CART={
   }
 };
 
-// ── DIVIDENDOS v6.0 — PDF + IA ───────────────────────────────
-// Lê extrato PDF da corretora e usa Claude para extrair proventos
+// ── DIVIDENDOS v7.0 — XLSX Parser (Agora + Rico) ────────────────
+// Lê extrato xlsx da corretora direto no browser via SheetJS — sem API, sem custo
 
-function renderDivsResult(resultados, perfilId) {
+function parsearAGORA(workbook) {
+  const ws = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const resultados = [];
+  const reProvento = /PAGAMENTO\s+DE\s+(RENDIMENTO|DIVIDENDO[S]?|JUROS\s+S\/.{0,20}CAPITAL|FRACOES)\s+S\/\s*\d*\s*(?:DE\s+)?([A-Z]{4,6}\d{0,2})/i;
+
+  rows.forEach(row => {
+    const dataRaw = row[0], desc = String(row[1] || ''), valorRaw = row[2];
+    if (!dataRaw || !desc || !valorRaw) return;
+    const valor = parseFloat(String(valorRaw).replace(',','.'));
+    if (isNaN(valor) || valor <= 0) return;
+    const m = desc.match(reProvento);
+    if (!m) return;
+    const tipoRaw = m[1].toUpperCase();
+    const ticker  = m[2].toUpperCase();
+    const provento = tipoRaw.startsWith('JUROS') ? 'JCP'
+                   : tipoRaw.startsWith('FRAC')  ? 'Fração'
+                   : tipoRaw.startsWith('REND')  ? 'Rendimento'
+                   : 'Dividendo';
+    let data = '';
+    if (typeof dataRaw === 'string' && dataRaw.includes('/')) {
+      const parts = dataRaw.split('/');
+      data = `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+    } else if (dataRaw instanceof Date) {
+      data = dataRaw.toISOString().substring(0,10);
+    }
+    if (data && ticker) resultados.push({ ticker, provento, data, total: valor });
+  });
+  return resultados;
+}
+
+function parsearRICO(workbook) {
+  const ws = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const resultados = [];
+  const reProvento = /^(DIVIDENDOS?|RENDIMENTOS?|JUROS\s+S\/.{0,10}CAPITAL)\s+DE\s+CLIENTES\s+([A-Z]{4,6}\d{0,2})\s+S\/\s+(\d+)/i;
+  const ignorar = /DAY.TRADE|AJUSTE|LIQUIDO\s+DAS|BM&F|BMF|IRRF|TED\s+BCO|MULTA|PIS\s+E\s+COFINS|SALDO\s+DEVEDOR/i;
+
+  rows.forEach(row => {
+    const dataRaw = row[1], desc = String(row[3] || ''), valorRaw = row[5];
+    if (!desc || !valorRaw) return;
+    if (ignorar.test(desc)) return;
+    const valor = parseFloat(String(valorRaw).replace(',','.'));
+    if (isNaN(valor) || valor <= 0) return;
+    const m = desc.match(reProvento);
+    if (!m) return;
+    const tipoRaw = m[1].toUpperCase();
+    const ticker  = m[2].toUpperCase();
+    const qtd     = parseInt(m[3]) || 0;
+    const provento = tipoRaw.startsWith('JUROS') ? 'JCP'
+                   : tipoRaw.startsWith('REND')  ? 'Rendimento'
+                   : 'Dividendo';
+    let data = '';
+    if (dataRaw instanceof Date) {
+      data = dataRaw.toISOString().substring(0,10);
+    } else if (typeof dataRaw === 'string' && dataRaw.includes('/')) {
+      const parts = dataRaw.split('/');
+      data = `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+    } else if (typeof dataRaw === 'number') {
+      const d = new Date(Math.round((dataRaw - 25569)*86400*1000));
+      data = d.toISOString().substring(0,10);
+    }
+    if (data && ticker) resultados.push({ ticker, provento, data, total: valor, qtd });
+  });
+  return resultados;
+}
+
+function detectarCorretora(workbook) {
+  const ws = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const amostra = rows.slice(0, 20).map(r => r.join(' ')).join(' ').toUpperCase();
+  if (amostra.includes('RENDIMENTOS DE CLIENTES') || amostra.includes('DIVIDENDOS DE CLIENTES') || amostra.includes('CONTA RICO')) return 'RICO';
+  return 'AGORA';
+}
+
+function montarResultados(extraidos, ativos) {
+  const carteiraMap = {};
+  ativos.forEach(a => { carteiraMap[a.ticker.toUpperCase()] = { qtd: parseFloat(a.qtd)||0, tipo: a.tipo }; });
+
+  return extraidos.map(e => {
+    const cart = carteiraMap[e.ticker] || {};
+    const tipo = cart.tipo || (e.ticker.endsWith('11') ? 'FII' : 'Ação');
+    const isento = tipo === 'FII';
+    const qtd = e.qtd || cart.qtd || 1;
+    const valorCota = qtd > 0 ? parseFloat((e.total / qtd).toFixed(6)) : 0;
+    const irPorCota  = isento ? 0 : valorCota * 0.15;
+    const liqPorCota = valorCota - irPorCota;
+    return { ticker: e.ticker, tipo, qtd, data: e.data, valorCota, provento: e.provento,
+             bruto: valorCota * qtd, ir: irPorCota * qtd, liquido: liqPorCota * qtd, isento };
+  }).filter(r => r.liquido > 0);
+}
+
+function renderDivsResult(resultados) {
   const container = document.getElementById('divsContent');
   const btn = document.getElementById('btnDivs');
   if (btn) btn.disabled = false;
 
   if (!resultados.length) {
     container.innerHTML = `<div class="empty" style="padding:1.5rem">
-      <p style="font-size:14px;font-weight:600">Nenhum provento encontrado no PDF</p>
-      <p style="font-size:12px;margin-top:.5rem;color:var(--muted)">Verifique se o arquivo é o extrato de proventos da corretora.</p>
+      <p style="font-size:14px;font-weight:600">Nenhum provento encontrado no arquivo</p>
+      <p style="font-size:12px;margin-top:.5rem;color:var(--muted)">Verifique se é o extrato de proventos da Agora ou Rico em xlsx.</p>
     </div>`;
     return;
   }
 
   resultados.sort((a, b) => b.data.localeCompare(a.data));
-
   const anoAtual = new Date().getFullYear();
   const anoStr = String(anoAtual);
   const porMes = {};
-  resultados.forEach(r => {
-    const m = r.data.substring(0, 7);
-    porMes[m] = (porMes[m] || 0) + r.liquido;
-  });
+  resultados.forEach(r => { const m = r.data.substring(0,7); porMes[m] = (porMes[m]||0) + r.liquido; });
   const ultimos12 = Object.keys(porMes).sort().slice(-12);
-  const totalGeral  = resultados.reduce((s, r) => s + r.liquido, 0);
-  const totalAnual  = resultados.filter(r => r.data.startsWith(anoStr)).reduce((s, r) => s + r.liquido, 0);
-  const mediaMensal = ultimos12.length > 0 ? ultimos12.reduce((s, m) => s + porMes[m], 0) / ultimos12.length : 0;
+  const totalGeral  = resultados.reduce((s,r) => s+r.liquido, 0);
+  const totalAnual  = resultados.filter(r=>r.data.startsWith(anoStr)).reduce((s,r)=>s+r.liquido,0);
+  const mediaMensal = ultimos12.length > 0 ? ultimos12.reduce((s,m)=>s+porMes[m],0)/ultimos12.length : 0;
   const porTicker = {};
   resultados.forEach(r => {
-    if (!porTicker[r.ticker]) porTicker[r.ticker] = { ticker: r.ticker, tipo: r.tipo, total: 0, qtd: r.qtd, isento: r.isento };
+    if (!porTicker[r.ticker]) porTicker[r.ticker]={ticker:r.ticker,tipo:r.tipo,total:0,qtd:r.qtd,isento:r.isento};
     porTicker[r.ticker].total += r.liquido;
   });
-  const rankTickers = Object.values(porTicker).sort((a,b) => b.total - a.total);
+  const rankTickers = Object.values(porTicker).sort((a,b)=>b.total-a.total);
   const MESES_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const fmtMes = m => { const [y,mo] = m.split('-'); return MESES_PT[parseInt(mo)-1]+'/'+y.slice(2); };
+  const fmtMes = m => { const [y,mo]=m.split('-'); return MESES_PT[parseInt(mo)-1]+'/'+y.slice(2); };
 
   container.innerHTML = `
     <div class="metrics" style="margin-bottom:1rem">
       <div class="mc"><div class="ml">Total recebido</div><div class="mv purple">${fmt(totalGeral)}</div><div class="ms muted">histórico completo</div></div>
       <div class="mc"><div class="ml">No ano (${anoAtual})</div><div class="mv purple">${fmt(totalAnual)}</div><div class="ms muted">${resultados.filter(r=>r.data.startsWith(anoStr)).length} pagamentos</div></div>
       <div class="mc"><div class="ml">Média mensal</div><div class="mv purple">${fmt(mediaMensal)}</div><div class="ms muted">últimos ${ultimos12.length} meses</div></div>
+      <div class="mc"><div class="ml">Ativos</div><div class="mv purple">${rankTickers.length}</div><div class="ms muted">pagaram proventos</div></div>
     </div>
     <div class="g2" style="margin-bottom:1rem">
       <div class="card">
@@ -718,151 +807,49 @@ function renderDivsResult(resultados, perfilId) {
           </div>
         </div>`).join('')}
       </div>
-    </div>
-  `;
+    </div>`;
 
   destroyChart('divChart');
   CH.divChart = new Chart(document.getElementById('divChart'), {
-    type: 'bar',
-    data: {
-      labels: ultimos12.map(fmtMes),
-      datasets: [{ data: ultimos12.map(m => parseFloat(porMes[m].toFixed(2))), backgroundColor: 'rgba(124,58,237,.65)', borderRadius: 3, borderSkipped: false }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: i => ' ' + fmt(i.raw) } } }, scales: { x: { grid: { display: false }, ticks: { color: TC(), font: { size: 10 } } }, y: { grid: { color: GC() }, ticks: { color: TC(), font: { size: 10 }, callback: v => 'R$'+(v/1000).toFixed(1)+'k' } } } }
+    type:'bar',data:{labels:ultimos12.map(fmtMes),datasets:[{data:ultimos12.map(m=>parseFloat(porMes[m].toFixed(2))),backgroundColor:'rgba(124,58,237,.65)',borderRadius:3,borderSkipped:false}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:i=>' '+fmt(i.raw)}}},scales:{x:{grid:{display:false},ticks:{color:TC(),font:{size:10}}},y:{grid:{color:GC()},ticks:{color:TC(),font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}}}}
   });
-
   destroyChart('divPieChart');
   CH.divPieChart = new Chart(document.getElementById('divPieChart'), {
-    type: 'doughnut',
-    data: { labels: rankTickers.map(t => t.ticker), datasets: [{ data: rankTickers.map(t => parseFloat(t.total.toFixed(2))), backgroundColor: rankTickers.map(t => TIPO_COLORS[t.tipo] || '#94a3b8'), borderWidth: 0, hoverOffset: 4 }] },
-    options: { responsive: true, maintainAspectRatio: false, cutout: '60%', plugins: { legend: { position: 'bottom', labels: { color: TC(), font: { size: 11 }, boxWidth: 12 } }, tooltip: { callbacks: { label: i => ' ' + fmt(i.raw) } } } }
+    type:'doughnut',data:{labels:rankTickers.map(t=>t.ticker),datasets:[{data:rankTickers.map(t=>parseFloat(t.total.toFixed(2))),backgroundColor:rankTickers.map(t=>TIPO_COLORS[t.tipo]||'#94a3b8'),borderWidth:0,hoverOffset:4}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:{position:'bottom',labels:{color:TC(),font:{size:11},boxWidth:12}},tooltip:{callbacks:{label:i=>' '+fmt(i.raw)}}}}
   });
 }
 
 window.DIVS = {
-  async loadPDF(file, perfilId) {
+  async loadXLSX(file, perfilId) {
     if (!file) return;
     const container = document.getElementById('divsContent');
     const btn = document.getElementById('btnDivs');
     if (btn) btn.disabled = true;
-
-    container.innerHTML = `<div class="empty" style="padding:1.5rem">
-      <div style="font-size:24px;margin-bottom:.5rem">🤖</div>
-      <p style="font-weight:600">Analisando extrato com IA...</p>
-      <p style="font-size:12px;margin-top:.5rem;color:var(--muted)">Isso pode levar alguns segundos.</p>
-    </div>`;
-
-    // Lê o PDF como base64
-    const base64 = await new Promise((res, rej) => {
-      const reader = new FileReader();
-      reader.onload = () => res(reader.result.split(',')[1]);
-      reader.onerror = () => rej(new Error('Erro ao ler PDF'));
-      reader.readAsDataURL(file);
-    });
-
-    // Monta a lista de tickers da carteira para contexto
-    const perfil = S.perfis.find(p => p.id === perfilId);
-    const ativos = (perfil?.ativos || []).filter(a => ['Ação','FII','ETF'].includes(a.tipo));
-    const tickerMap = {};
-    ativos.forEach(a => { tickerMap[a.ticker] = { qtd: parseFloat(a.qtd) || 0, tipo: a.tipo }; });
-    const tickerList = ativos.map(a => `${a.ticker} (${a.tipo}, ${a.qtd} cotas)`).join(', ');
-
-    const prompt = `Você é um especialista em investimentos brasileiros. Analise este extrato de proventos de corretora (Agora Investimentos ou Rico) e extraia TODOS os eventos de dividendos, JCP, rendimentos de FII e outros proventos pagos.
-
-Carteira do investidor para referência (use para preencher qtd quando não estiver explícito no extrato):
-${tickerList || 'Nenhum ativo cadastrado — use as quantidades do extrato.'}
-
-Retorne SOMENTE um JSON válido, sem explicações, sem markdown, sem blocos de código. O formato deve ser exatamente:
-[
-  {
-    "ticker": "MXRF11",
-    "tipo": "FII",
-    "data": "2024-03-15",
-    "valorCota": 0.09,
-    "qtd": 947,
-    "provento": "Rendimento"
-  }
-]
-
-Regras:
-- "data" no formato YYYY-MM-DD (data de pagamento)
-- "valorCota" é o valor por cota/ação em reais (número decimal)
-- "qtd" é a quantidade de cotas/ações
-- "tipo" deve ser: "FII", "Ação" ou "ETF"
-- "provento" deve ser: "Dividendo", "JCP", "Rendimento" ou "Provento"
-- Se não encontrar proventos, retorne []
-- Inclua TODOS os proventos encontrados, mesmo de tickers não listados na carteira`;
-
+    container.innerHTML = `<div class="empty" style="padding:1.5rem"><div style="font-size:24px;margin-bottom:.5rem">⏳</div><p style="font-weight:600">Lendo extrato...</p></div>`;
     try {
-      const resp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 4000,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
-              { type: 'text', text: prompt }
-            ]
-          }]
-        })
-      });
-
-      if (!resp.ok) {
-        const err = await resp.text();
-        throw new Error(`API ${resp.status}: ${err.substring(0,200)}`);
-      }
-
-      const data = await resp.json();
-      const raw = data.content?.find(b => b.type === 'text')?.text || '[]';
-      const clean = raw.replace(/```json|```/g, '').trim();
-      const extraidos = JSON.parse(clean);
-
-      if (!Array.isArray(extraidos) || extraidos.length === 0) {
-        container.innerHTML = `<div class="empty" style="padding:1.5rem">
-          <p style="font-size:14px;font-weight:600">Nenhum provento encontrado no PDF</p>
-          <p style="font-size:12px;margin-top:.5rem;color:var(--muted)">Verifique se é o extrato de proventos correto.</p>
-        </div>`;
-        if (btn) btn.disabled = false;
-        return;
-      }
-
-      // Monta resultados com cálculo de IR
-      const resultados = extraidos.map(d => {
-        const isento = d.tipo === 'FII';
-        const qtd = parseFloat(d.qtd) || tickerMap[d.ticker]?.qtd || 1;
-        const valorCota = parseFloat(d.valorCota) || 0;
-        const irPorCota = isento ? 0 : valorCota * 0.15;
-        const liqPorCota = valorCota - irPorCota;
-        return {
-          ticker: d.ticker, tipo: d.tipo, qtd,
-          data: d.data, valorCota, provento: d.provento || 'Provento',
-          bruto: valorCota * qtd,
-          ir: irPorCota * qtd,
-          liquido: liqPorCota * qtd,
-          isento
-        };
-      });
-
-      renderDivsResult(resultados, perfilId);
-
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type:'array', cellDates:true });
+      const corretora = detectarCorretora(workbook);
+      container.innerHTML = `<div class="empty" style="padding:1.5rem"><div style="font-size:24px;margin-bottom:.5rem">📊</div><p style="font-weight:600">Processando extrato ${corretora}...</p></div>`;
+      const perfil = S.perfis.find(p => p.id === perfilId);
+      const ativos = (perfil?.ativos || []).filter(a => ['Ação','FII','ETF'].includes(a.tipo));
+      const extraidos = corretora === 'RICO' ? parsearRICO(workbook) : parsearAGORA(workbook);
+      const resultados = montarResultados(extraidos, ativos);
+      renderDivsResult(resultados);
     } catch(e) {
-      console.error('DIVS PDF erro:', e);
+      console.error('DIVS XLSX erro:', e);
       container.innerHTML = `<div class="empty" style="padding:1.5rem">
-        <p style="font-size:14px;font-weight:600">Erro ao processar PDF</p>
+        <p style="font-size:14px;font-weight:600">Erro ao processar arquivo</p>
         <p style="font-size:12px;margin-top:.5rem;color:var(--muted)">${e.message}</p>
       </div>`;
       if (btn) btn.disabled = false;
     }
-
-    // Reseta o input para permitir re-upload do mesmo arquivo
-    const input = document.getElementById('pdfDivsInput');
+    const input = document.getElementById('xlsxDivsInput');
     if (input) input.value = '';
   }
 };
-
 
 
 // ── CONSOLIDADO ───────────────────────────────────────────────
