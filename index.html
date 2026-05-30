@@ -1149,7 +1149,7 @@ window.APORTE={
             </div>
             <div class="div-row-right">
               <span class="div-valor" style="color:var(--blue)">${fmt(a.valor)}</span>
-              <button class="btn-ghost" style="font-size:11px;color:var(--red)" onclick="APORTE.del('${perfilId}','${a.mes}')">✕ remover</button>
+              <button class="btn-ghost" style="font-size:11px;color:var(--red)" onclick="APORTE.del('`+perfilId+`','${a.mes}')">✕ remover</button>
             </div>
           </div>`).join('')}
         </div>`;
@@ -1225,18 +1225,33 @@ window.CONS={
 async function init(){
   APP.setStatus('Conectando ao servidor...');
 
-  // Carrega perfis
-  try{const snap=await dbGet('perfis');if(snap.exists())S.perfis=snap.data().lista||[];}catch(e){}
+  // Timeout de segurança — se Firebase travar, mostra o app mesmo assim após 5s
+  const fallbackTimer = setTimeout(() => {
+    if(document.getElementById('upload-overlay').style.display !== 'none'){
+      APP.showMain(); buildNav();
+    }
+  }, 5000);
+
+  // Carrega perfis com timeout individual de 8s
+  try{
+    const snap = await Promise.race([
+      dbGet('perfis'),
+      new Promise((_,rej) => setTimeout(()=>rej(new Error('timeout')), 8000))
+    ]);
+    if(snap.exists()) S.perfis = snap.data().lista || [];
+  }catch(e){ console.warn('Erro ao carregar perfis:', e.message); }
+
   if(S.perfis.length===0){
     S.perfis=[{id:'minha',nome:'Minha Carteira',cor:'#3b82f6',ativos:[]},{id:'gigi',nome:'Carteira Gigi',cor:'#ec4899',ativos:[]}];
-    await dbSet('perfis',{lista:S.perfis,updatedAt:Date.now()});
+    try{ await dbSet('perfis',{lista:S.perfis,updatedAt:Date.now()}); }catch(e){}
   }
   S.perfilAtivo=S.perfis[0].id;
 
   // Carrega meta
   try{const snap=await dbGet('meta');if(snap.exists())S.meta=snap.data().meta||null;}catch(e){}
 
-  // Mostra o app imediatamente, sem esperar o snapshot
+  // Mostra o app imediatamente
+  clearTimeout(fallbackTimer);
   APP.showMain();buildNav();
 
   // Escuta trade
