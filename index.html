@@ -627,13 +627,13 @@ window.CART={
 };
 
 // ── DIVIDENDOS v2.0.1 ────────────────────────────────────────
-// Busca via brapi.dev com token=demo (funciona para todos os tickers no plano demo)
+// Busca via brapi.dev com token autenticado
 // Para FIIs usa endpoint dedicado que retorna rendimentos mensais
 async function fetchDivsBrapi(ticker, tipo) {
   const results = [];
   try {
     // Endpoint principal com dividends=true
-    const url = `https://brapi.dev/api/quote/${encodeURIComponent(ticker)}?dividends=true&token=demo`;
+    const url = `https://brapi.dev/api/quote/${encodeURIComponent(ticker)}?dividends=true&token=5Bri8ThQpzR7XDnuLGqxJW`;
     const resp = await fetch(url);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
@@ -698,7 +698,7 @@ window.DIVS = {
     if (!resultados.length) {
       container.innerHTML = `<div class="empty" style="padding:1.5rem">
         <p style="font-size:14px;font-weight:600">Nenhum provento retornado pela API</p>
-        <p style="font-size:12px;margin-top:.5rem;color:var(--muted)">A brapi.dev pode não ter histórico para os tickers cadastrados no plano demo.<br>Tickers com dados garantidos: PETR4, VALE3, ITUB4, MGLU3.</p>
+
       </div>`;
       if (btn) { btn.disabled = false; btn.textContent = '↻ Buscar proventos'; }
       return;
@@ -911,9 +911,11 @@ async function init(){
   // Carrega meta
   try{const snap=await dbGet('meta');if(snap.exists())S.meta=snap.data().meta||null;}catch(e){}
 
+  // Mostra o app imediatamente, sem esperar o snapshot
+  APP.showMain();buildNav();
+
   // Escuta trade
   dbWatch('dashboard',snap=>{
-    APP.showMain();buildNav();
     if(snap.exists()&&snap.data().payload){
       S.tradePayload=snap.data().payload;S.tradeUpdAt=snap.data().updatedAt;
       if(S.view==='trade')TRADE.render(S.tradePayload,S.tradeUpdAt);
