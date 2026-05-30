@@ -739,8 +739,7 @@ window.CART={
       const inv=a.qtd*a.precoMedio,at=a.qtd*(a.precoAtual||a.precoMedio),l=at-inv,p=inv>0?(l/inv)*100:0;
       rows.push([a.ticker,a.nome||'',a.tipo,a.qtd,a.precoMedio.toFixed(2),(a.precoAtual||'').toString(),inv.toFixed(2),at.toFixed(2),l.toFixed(2),p.toFixed(2)+'%',(a.changeDay||0).toFixed(2)+'%']);
     });
-    const csv=rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('
-');
+    const csv=rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
     const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
     const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`carteira_${perfil.nome}_${new Date().toLocaleDateString('pt-BR').replace(/\//g,'-')}.csv`;a.click();
   },
