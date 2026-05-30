@@ -626,67 +626,220 @@ window.CART={
   }
 };
 
-// ── DIVIDENDOS ────────────────────────────────────────────────
-window.DIVS={
-  async load(perfilId){
-    const btn=document.getElementById('btnDivs');
-    if(btn){btn.disabled=true;btn.textContent='Buscando...';}
-    const perfil=S.perfis.find(p=>p.id===perfilId);
-    const ativos=(perfil?.ativos||[]).filter(a=>['Ação','FII','ETF'].includes(a.tipo));
-    if(!ativos.length){document.getElementById('divsContent').innerHTML='<div class="empty" style="padding:1rem"><p>Nenhum ativo elegível para dividendos (Ações, FIIs, ETFs).</p></div>';if(btn){btn.disabled=false;btn.textContent='↻ Buscar proventos';}return;}
-
-    // Busca dividendos de todos os ativos
-    const resultados=[];
-    for(const a of ativos){
-      const divs=await fetchDividendos(a.ticker);
-      divs.forEach(d=>{
-        // Desconto: FII isento, Ação/ETF 15% na fonte sobre dividendo (JCP 15%)
-        const isento=a.tipo==='FII';
-        const ir=isento?0:d.valorPorCota*0.15;
-        const liq=(d.valorPorCota-ir)*a.qtd;
-        resultados.push({ticker:a.ticker,tipo:a.tipo,qtd:a.qtd,data:d.data,valorCota:d.valorPorCota,provento:d.tipo,total:d.valorPorCota*a.qtd,ir:ir*a.qtd,liquido:liq,isento});
+// ── DIVIDENDOS v2.0.1 ────────────────────────────────────────
+// Busca via brapi.dev com token=demo (funciona para todos os tickers no plano demo)
+// Para FIIs usa endpoint dedicado que retorna rendimentos mensais
+async function fetchDivsBrapi(ticker, tipo) {
+  const results = [];
+  try {
+    // Endpoint principal com dividends=true
+    const url = `https://brapi.dev/api/quote/${encodeURIComponent(ticker)}?dividends=true&token=demo`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    const q = data.results && data.results[0];
+    if (!q) return results;
+    const cash = q.dividendsData && q.dividendsData.cashDividends;
+    if (Array.isArray(cash)) {
+      cash.forEach(d => {
+        // campos possíveis da API: paymentDate, approvedOn, lastDatePrior, rate, label
+        const data_pag = d.paymentDate || d.approvedOn || d.lastDatePrior || '';
+        const valor = parseFloat(d.rate) || 0;
+        const label = d.label || d.type || (tipo === 'FII' ? 'Rendimento' : 'Dividendo');
+        if (valor > 0 && data_pag) results.push({ data: data_pag.substring(0,10), valorCota: valor, tipo: label });
       });
     }
-    resultados.sort((a,b)=>b.data.localeCompare(a.data));
+  } catch(e) { console.warn('brapi dividendos', ticker, e.message); }
+  return results;
+}
 
-    if(!resultados.length){document.getElementById('divsContent').innerHTML='<div class="empty" style="padding:1rem"><p>Nenhum provento encontrado para os ativos cadastrados.</p></div>';if(btn){btn.disabled=false;btn.textContent='↻ Buscar proventos';}return;}
+window.DIVS = {
+  async load(perfilId) {
+    const btn = document.getElementById('btnDivs');
+    const container = document.getElementById('divsContent');
+    if (btn) { btn.disabled = true; btn.textContent = 'Buscando...'; }
+    container.innerHTML = `<div class="empty" style="padding:1.5rem"><div style="font-size:24px;margin-bottom:.5rem">⏳</div><p>Buscando proventos na brapi.dev...</p></div>`;
 
-    // Agrupa por mês
-    const porMes={};
-    resultados.forEach(r=>{const m=r.data.substring(0,7);porMes[m]=(porMes[m]||0)+r.liquido;});
-    const meses=Object.keys(porMes).sort().slice(-12);
-    const totalAnual=resultados.filter(r=>r.data>=new Date().getFullYear()+'-01-01').reduce((s,r)=>s+r.liquido,0);
-    const totalGeral=resultados.reduce((s,r)=>s+r.liquido,0);
-    const mediaMensal=meses.length>0?meses.reduce((s,m)=>s+porMes[m],0)/meses.length:0;
+    const perfil = S.perfis.find(p => p.id === perfilId);
+    const ativos = (perfil?.ativos || []).filter(a => ['Ação','FII','ETF'].includes(a.tipo));
 
-    document.getElementById('divsContent').innerHTML=`
+    if (!ativos.length) {
+      container.innerHTML = '<div class="empty" style="padding:1rem"><p>Nenhum ativo do tipo Ação, FII ou ETF cadastrado.</p></div>';
+      if (btn) { btn.disabled = false; btn.textContent = '↻ Buscar proventos'; }
+      return;
+    }
+
+    const resultados = [];
+    let erros = 0;
+
+    for (const a of ativos) {
+      try {
+        const divs = await fetchDivsBrapi(a.ticker, a.tipo);
+        if (!divs.length) { erros++; continue; }
+        divs.forEach(d => {
+          // FII: isento de IR | Ação: 15% retido | ETF: 15%
+          const isento = a.tipo === 'FII';
+          const irPorCota = isento ? 0 : d.valorCota * 0.15;
+          const liqPorCota = d.valorCota - irPorCota;
+          resultados.push({
+            ticker: a.ticker, tipo: a.tipo, qtd: a.qtd,
+            data: d.data, valorCota: d.valorCota, provento: d.tipo,
+            bruto: d.valorCota * a.qtd,
+            ir: irPorCota * a.qtd,
+            liquido: liqPorCota * a.qtd,
+            isento
+          });
+        });
+      } catch(e) { erros++; }
+    }
+
+    resultados.sort((a, b) => b.data.localeCompare(a.data));
+
+    if (!resultados.length) {
+      container.innerHTML = `<div class="empty" style="padding:1.5rem">
+        <p style="font-size:14px;font-weight:600">Nenhum provento retornado pela API</p>
+        <p style="font-size:12px;margin-top:.5rem;color:var(--muted)">A brapi.dev pode não ter histórico para os tickers cadastrados no plano demo.<br>Tickers com dados garantidos: PETR4, VALE3, ITUB4, MGLU3.</p>
+      </div>`;
+      if (btn) { btn.disabled = false; btn.textContent = '↻ Buscar proventos'; }
+      return;
+    }
+
+    // ── Cálculos por período ──
+    const anoAtual = new Date().getFullYear();
+    const anoStr   = String(anoAtual);
+
+    // Agrupa por mês — últimos 12 meses com dados
+    const porMes = {};
+    resultados.forEach(r => {
+      const m = r.data.substring(0, 7);
+      porMes[m] = (porMes[m] || 0) + r.liquido;
+    });
+    const todosMeses = Object.keys(porMes).sort();
+    const ultimos12  = todosMeses.slice(-12);
+
+    const totalGeral  = resultados.reduce((s, r) => s + r.liquido, 0);
+    const totalAnual  = resultados.filter(r => r.data.startsWith(anoStr)).reduce((s, r) => s + r.liquido, 0);
+    const mediaMensal = ultimos12.length > 0
+      ? ultimos12.reduce((s, m) => s + porMes[m], 0) / ultimos12.length
+      : 0;
+
+    // Agrupa por ticker para resumo
+    const porTicker = {};
+    resultados.forEach(r => {
+      if (!porTicker[r.ticker]) porTicker[r.ticker] = { ticker: r.ticker, tipo: r.tipo, total: 0, qtd: r.qtd, isento: r.isento };
+      porTicker[r.ticker].total += r.liquido;
+    });
+    const rankTickers = Object.values(porTicker).sort((a,b) => b.total - a.total);
+
+    const MESES_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    const fmtMes = m => { const [y,mo] = m.split('-'); return MESES_PT[parseInt(mo)-1]+'/'+y.slice(2); };
+
+    container.innerHTML = `
       <div class="metrics" style="margin-bottom:1rem">
         <div class="mc"><div class="ml">Total recebido</div><div class="mv purple">${fmt(totalGeral)}</div><div class="ms muted">histórico completo</div></div>
-        <div class="mc"><div class="ml">No ano</div><div class="mv purple">${fmt(totalAnual)}</div><div class="ms muted">${new Date().getFullYear()}</div></div>
-        <div class="mc"><div class="ml">Média mensal</div><div class="mv purple">${fmt(mediaMensal)}</div><div class="ms muted">últimos ${meses.length} meses</div></div>
+        <div class="mc"><div class="ml">No ano (${anoAtual})</div><div class="mv purple">${fmt(totalAnual)}</div><div class="ms muted">${resultados.filter(r=>r.data.startsWith(anoStr)).length} pagamentos</div></div>
+        <div class="mc"><div class="ml">Média mensal</div><div class="mv purple">${fmt(mediaMensal)}</div><div class="ms muted">últimos ${ultimos12.length} meses</div></div>
+        ${erros>0?`<div class="mc"><div class="ml">Sem dados</div><div class="mv muted">${erros} ativo${erros>1?'s':''}</div><div class="ms muted">não retornados</div></div>`:''}
       </div>
+
       <div class="g2" style="margin-bottom:1rem">
-        <div class="card"><div class="card-title">Proventos mensais líquidos (R$)</div><div class="cw h160"><canvas id="divChart"></canvas></div></div>
         <div class="card">
-          <div class="card-title">Últimos proventos</div>
-          <div style="max-height:160px;overflow-y:auto">
-            ${resultados.slice(0,8).map(r=>`
+          <div class="card-title">Proventos mensais líquidos — últimos 12 meses</div>
+          <div class="cw h180"><canvas id="divChart"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Por ativo (líquido total)</div>
+          <div class="cw h180"><canvas id="divPieChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="g2" style="margin-bottom:1rem">
+        <div class="card">
+          <div class="card-title">Últimos proventos recebidos</div>
+          <div style="max-height:240px;overflow-y:auto">
+            ${resultados.slice(0,15).map(r=>`
             <div class="div-row">
-              <div><strong>${r.ticker}</strong> <span class="badge bpurple" style="font-size:10px">${r.provento}</span></div>
+              <div>
+                <strong>${r.ticker}</strong>
+                <span class="badge bpurple" style="font-size:10px;margin-left:4px">${r.provento}</span>
+                ${r.isento?'<span style="font-size:10px;color:var(--green);margin-left:4px">isento</span>':''}
+              </div>
               <div style="text-align:right">
-                <div class="purple" style="font-weight:600">${fmt(r.liquido)}</div>
-                <div class="seg">${r.qtd} × ${fmt(r.valorCota)} ${r.isento?'<span style="color:var(--green);font-size:10px">isento</span>':'<span class="muted" style="font-size:10px">IR: '+fmt(r.ir)+'</span>'}</div>
+                <div class="purple" style="font-weight:700;font-size:14px">${fmt(r.liquido)}</div>
+                <div class="seg">${r.qtd} cotas × ${fmt(r.valorCota)}</div>
+                ${!r.isento?`<div class="seg red">IR retido: ${fmt(r.ir)}</div>`:''}
                 <div class="seg">${r.data}</div>
               </div>
             </div>`).join('')}
           </div>
         </div>
+        <div class="card">
+          <div class="card-title">Ranking por ativo</div>
+          ${rankTickers.map((t,i)=>`
+          <div class="div-row">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:11px;font-weight:700;color:var(--muted);width:16px">${i+1}</span>
+              <div>
+                <strong>${t.ticker}</strong>
+                <span class="tipo-badge" style="background:${TIPO_COLORS[t.tipo]||'#94a3b8'}22;color:${TIPO_COLORS[t.tipo]||'#94a3b8'};margin-left:4px">${t.tipo}</span>
+              </div>
+            </div>
+            <div style="text-align:right">
+              <div class="purple" style="font-weight:600">${fmt(t.total)}</div>
+              <div class="seg">${t.qtd} cotas ${t.isento?'· isento':''}</div>
+            </div>
+          </div>`).join('')}
+        </div>
       </div>
     `;
 
+    // Gráfico barras mensal
     destroyChart('divChart');
-    CH.divChart=new Chart(document.getElementById('divChart'),{type:'bar',data:{labels:meses.map(m=>{const[y,mo]=m.split('-');return ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][parseInt(mo)-1]+'/'+y.slice(2);}),datasets:[{data:meses.map(m=>porMes[m]),backgroundColor:'rgba(124,58,237,.65)',borderRadius:3,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:TC(),font:{size:10}}},y:{grid:{color:GC()},ticks:{color:TC(),font:{size:10},callback:v=>'R$'+(v/1000).toFixed(1)+'k'}}}}});
-    if(btn){btn.disabled=false;btn.textContent='↻ Buscar proventos';}
+    CH.divChart = new Chart(document.getElementById('divChart'), {
+      type: 'bar',
+      data: {
+        labels: ultimos12.map(fmtMes),
+        datasets: [{
+          data: ultimos12.map(m => parseFloat(porMes[m].toFixed(2))),
+          backgroundColor: 'rgba(124,58,237,.65)',
+          borderRadius: 3, borderSkipped: false
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: i => ' ' + fmt(i.raw) } }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: TC(), font: { size: 10 } } },
+          y: { grid: { color: GC() }, ticks: { color: TC(), font: { size: 10 }, callback: v => 'R$'+(v/1000).toFixed(1)+'k' } }
+        }
+      }
+    });
+
+    // Gráfico pizza por ticker
+    destroyChart('divPieChart');
+    CH.divPieChart = new Chart(document.getElementById('divPieChart'), {
+      type: 'doughnut',
+      data: {
+        labels: rankTickers.map(t => t.ticker),
+        datasets: [{
+          data: rankTickers.map(t => parseFloat(t.total.toFixed(2))),
+          backgroundColor: rankTickers.map(t => TIPO_COLORS[t.tipo] || '#94a3b8'),
+          borderWidth: 0, hoverOffset: 4
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '60%',
+        plugins: {
+          legend: { position: 'bottom', labels: { color: TC(), font: { size: 11 }, boxWidth: 12 } },
+          tooltip: { callbacks: { label: i => ' ' + fmt(i.raw) } }
+        }
+      }
+    });
+
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Buscar proventos'; }
   }
 };
 
