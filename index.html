@@ -546,6 +546,9 @@ window.CART={
       </div>
     `;
 
+    // Carrega proventos salvos automaticamente
+    DIVS.carregar(perfilId);
+
     if(ativos.length>0){
       const tb=document.getElementById('tCart');
       ativos.forEach(a=>{
@@ -699,9 +702,10 @@ function parsearRICO(workbook) {
 
 function detectarCorretora(workbook) {
   const ws = workbook.Sheets[workbook.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-  const amostra = rows.slice(0, 20).map(r => r.join(' ')).join(' ').toUpperCase();
-  if (amostra.includes('RENDIMENTOS DE CLIENTES') || amostra.includes('DIVIDENDOS DE CLIENTES') || amostra.includes('CONTA RICO')) return 'RICO';
+  // Usa sheet_to_csv para evitar que Date objects virem [object Object] no join
+  const csv = XLSX.utils.sheet_to_csv(ws).toUpperCase();
+  const primeiras = csv.split('\n').slice(0, 25).join(' ');
+  if (primeiras.includes('RENDIMENTOS DE CLIENTES') || primeiras.includes('DIVIDENDOS DE CLIENTES') || primeiras.includes('CONTA RICO')) return 'RICO';
   return 'AGORA';
 }
 
@@ -837,6 +841,15 @@ window.DIVS = {
       const ativos = (perfil?.ativos || []).filter(a => ['Ação','FII','ETF'].includes(a.tipo));
       const extraidos = corretora === 'RICO' ? parsearRICO(workbook) : parsearAGORA(workbook);
       const resultados = montarResultados(extraidos, ativos);
+      if (resultados.length > 0) {
+        // Salva no Firebase por perfilId — persiste entre sessões
+        try {
+          const snap = await dbGet('proventos');
+          const atual = snap.exists() ? (snap.data().porPerfil || {}) : {};
+          atual[perfilId] = { resultados, updatedAt: Date.now(), corretora };
+          await dbSet('proventos', { porPerfil: atual, updatedAt: Date.now() });
+        } catch(e2) { console.warn('Erro ao salvar proventos:', e2); }
+      }
       renderDivsResult(resultados);
     } catch(e) {
       console.error('DIVS XLSX erro:', e);
@@ -848,6 +861,27 @@ window.DIVS = {
     }
     const input = document.getElementById('xlsxDivsInput');
     if (input) input.value = '';
+  },
+
+  // Carrega proventos salvos do Firebase para um perfil
+  async carregar(perfilId) {
+    const container = document.getElementById('divsContent');
+    if (!container) return;
+    try {
+      const snap = await dbGet('proventos');
+      if (snap.exists()) {
+        const porPerfil = snap.data().porPerfil || {};
+        const dados = porPerfil[perfilId];
+        if (dados && dados.resultados && dados.resultados.length > 0) {
+          const dt = new Date(dados.updatedAt).toLocaleDateString('pt-BR');
+          renderDivsResult(dados.resultados);
+          // Mostra data da última importação no botão
+          const btn = document.getElementById('btnDivs');
+          if (btn) btn.title = `Última importação: ${dt} (${dados.corretora})`;
+          return;
+        }
+      }
+    } catch(e) { console.warn('Erro ao carregar proventos:', e); }
   }
 };
 
