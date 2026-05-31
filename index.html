@@ -113,12 +113,39 @@ tr:hover td{background:var(--surf2)}
 .div-valor{font-weight:700;font-size:15px;color:var(--purple,#7c3aed)}
 .div-meta{font-size:11px;color:var(--muted);line-height:1.5}
 .div-ir{font-size:11px;color:var(--red,#ef4444)}
-/* Scrollbar customizada */
+/* Scrollbar customizada global */
 .divs-scroll{max-height:300px;overflow-y:auto;padding-right:4px}
-.divs-scroll::-webkit-scrollbar{width:4px}
-.divs-scroll::-webkit-scrollbar-track{background:transparent}
-.divs-scroll::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:4px}
-.divs-scroll::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+.divs-scroll::-webkit-scrollbar,.table-wrap::-webkit-scrollbar{width:4px;height:4px}
+.divs-scroll::-webkit-scrollbar-track,.table-wrap::-webkit-scrollbar-track{background:transparent}
+.divs-scroll::-webkit-scrollbar-thumb,.table-wrap::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:4px}
+.divs-scroll::-webkit-scrollbar-thumb:hover,.table-wrap::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+/* SKELETON LOADER */
+@keyframes shimmer{0%{background-position:-700px 0}100%{background-position:700px 0}}
+.skel{border-radius:6px;background:linear-gradient(90deg,var(--surf2) 25%,var(--bdr) 50%,var(--surf2) 75%);background-size:700px 100%;animation:shimmer 1.4s infinite linear}
+.skel-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:.5px solid var(--bdr)}
+.skel-row:last-child{border-bottom:none}
+/* MOBILE */
+@media(max-width:640px){
+  .navbar{padding:0 .75rem;gap:4px}
+  .navbar-brand{font-size:13px;margin-right:4px}
+  .nav-tab{padding:5px 10px;font-size:12px}
+  .content{padding:.75rem}
+  .tab-header{flex-direction:column;align-items:flex-start;gap:.5rem}
+  .tab-header>div:last-child{width:100%;justify-content:flex-start;flex-wrap:wrap}
+  .metrics{grid-template-columns:1fr 1fr;gap:8px}
+  .mc{padding:.7rem .8rem}
+  .mv{font-size:16px}
+  .g2,.g3{grid-template-columns:1fr}
+  .card{padding:.9rem 1rem}
+  table{font-size:12px}
+  th,td{padding:6px 8px}
+  th:nth-child(6),th:nth-child(7),td:nth-child(6),td:nth-child(7){display:none}
+  .div-row{flex-direction:column;align-items:flex-start;gap:6px}
+  .div-row-right{align-items:flex-start;min-width:unset}
+  .modal{border-radius:12px 12px 0 0;position:fixed;bottom:0;left:0;right:0;max-width:100%;max-height:85vh}
+  .modal-bg{align-items:flex-end;padding:0}
+  .btn-primary,.btn-sm,.btn{font-size:12px;padding:7px 12px}
+}
 </style>
 </head>
 <body>
@@ -524,6 +551,7 @@ window.CART={
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <span style="font-size:11px;color:var(--muted)">preços: ${lastUpStr} <span class="auto-badge">auto 1h</span></span>
           <button class="btn-sm" id="btnRefresh" onclick="refreshAllPrecos('${perfil.id}')">↻ Atualizar preços</button>
+          <button class="btn-sm" onclick="CART.exportCSV('${perfil.id}')" title="Exportar carteira em CSV">⬇ Exportar</button>
           <button class="btn-primary" onclick="CART.openModal(null,'${perfil.id}')">+ Adicionar ativo</button>
         </div>
       </div>
@@ -544,21 +572,56 @@ window.CART={
         <div class="card-title">Ativos</div>
         ${ativos.length===0?`<div class="empty"><div style="font-size:36px;margin-bottom:.5rem">📊</div><p>Nenhum ativo cadastrado.</p></div>`:`
         <div class="table-wrap"><table>
-          <thead><tr><th>Ativo</th><th>Tipo</th><th>Qtd</th><th>P. Médio</th><th>P. Atual</th><th>Investido</th><th>Atual</th><th>Lucro R$</th><th>Lucro %</th><th>Dia</th><th></th></tr></thead>
-          <tbody id="tCart"></tbody>
+          <thead><tr>
+            <th onclick="CART.sort('ticker')" style="cursor:pointer;user-select:none">Ativo <span id="srt-ticker"></span></th>
+            <th>Tipo</th><th>Qtd</th><th>P. Médio</th><th>P. Atual</th>
+            <th onclick="CART.sort('inv')" style="cursor:pointer;user-select:none">Investido <span id="srt-inv"></span></th>
+            <th onclick="CART.sort('at')" style="cursor:pointer;user-select:none">Atual <span id="srt-at"></span></th>
+            <th onclick="CART.sort('lucro')" style="cursor:pointer;user-select:none">Lucro R$ <span id="srt-lucro"></span></th>
+            <th onclick="CART.sort('pct')" style="cursor:pointer;user-select:none">Lucro % <span id="srt-pct"></span></th>
+            <th onclick="CART.sort('dia')" style="cursor:pointer;user-select:none">Dia <span id="srt-dia"></span></th>
+            <th></th></tr></thead>
+          <tbody id="tCart">${ativos.map(()=>`<tr class="skel-row-tr">
+            <td><div class="skel" style="height:14px;width:60px;margin-bottom:4px"></div><div class="skel" style="height:10px;width:90px"></div></td>
+            <td><div class="skel" style="height:20px;width:40px;border-radius:20px"></div></td>
+            <td><div class="skel" style="height:13px;width:30px"></div></td>
+            <td><div class="skel" style="height:13px;width:55px"></div></td>
+            <td><div class="skel" style="height:13px;width:60px"></div></td>
+            <td><div class="skel" style="height:13px;width:70px"></div></td>
+            <td><div class="skel" style="height:13px;width:70px"></div></td>
+            <td><div class="skel" style="height:13px;width:65px"></div></td>
+            <td><div class="skel" style="height:20px;width:50px;border-radius:20px"></div></td>
+            <td><div class="skel" style="height:13px;width:45px"></div></td>
+            <td></td></tr>`).join('')}</tbody>
         </table></div>`}
       </div>
       <div class="card">
+        <div class="card-title">📅 Histórico de Aportes</div>
+        <div id="aporteContent">
+          <div class="empty" style="padding:1rem"><p style="font-size:13px">Registre seus aportes mensais para acompanhar a evolução.</p></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--bdr)">
+          <input type="month" id="aporteMonth" style="padding:6px 10px;border-radius:8px;border:1px solid var(--bdr);background:var(--surf2);color:var(--txt);font-size:13px" value="${new Date().toISOString().substring(0,7)}">
+          <input type="number" id="aporteValor" placeholder="Valor aportado (R$)" step="0.01" min="0" style="padding:6px 10px;border-radius:8px;border:1px solid var(--bdr);background:var(--surf2);color:var(--txt);font-size:13px;width:180px">
+          <button class="btn-primary" style="font-size:12px" onclick="APORTE.add('${perfilId}')">+ Registrar aporte</button>
+        </div>
+      </div>
+      <div class="card">
         <div class="card-header"><span class="card-title">💰 Dividendos e Proventos</span>
-          <label class="btn-sm" id="btnDivs" style="cursor:pointer" for="xlsxDivsInput">📊 Importar extrato XLSX</label>
-          <input type="file" id="xlsxDivsInput" accept=".xlsx,.xls" style="display:none" onchange="DIVS.loadXLSX(this.files[0], '${perfilId}')">
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <label class="btn-sm" id="btnDivs" style="cursor:pointer" for="xlsxDivsInput">📊 Importar extrato XLSX</label>
+            <input type="file" id="xlsxDivsInput" accept=".xlsx,.xls" style="display:none" onchange="DIVS.loadXLSX(this.files[0], '${perfilId}')">
+            <button class="btn-sm" onclick="DIVS.exportCSV('${perfilId}')" title="Exportar proventos em CSV">⬇ Exportar</button>
+            <button class="btn-sm" onclick="DIVS.limpar('${perfilId}')" title="Limpar histórico e reimportar" style="color:var(--red)">✕ Limpar</button>
+          </div>
         </div>
         <div id="divsContent"><div class="empty" style="padding:1.5rem"><p style="font-size:13px">Importe o extrato da Agora ou Rico em formato XLSX. Os proventos são extraídos automaticamente.</p></div></div>
       </div>
     `;
 
-    // Carrega proventos salvos automaticamente
+    // Carrega proventos e aportes salvos automaticamente
     DIVS.carregar(perfilId);
+    APORTE.render(perfilId);
 
     if(ativos.length>0){
       const tb=document.getElementById('tCart');
@@ -624,6 +687,61 @@ window.CART={
     if(!confirm('Remover este ativo?'))return;
     const perfil=S.perfis.find(p=>p.id===perfilId);
     if(perfil){perfil.ativos=(perfil.ativos||[]).filter(a=>a.id!==ativoId);await dbSet('perfis',{lista:S.perfis,updatedAt:Date.now()});this.render(perfilId);}
+  },
+  _sortCol:null,_sortDir:1,
+  sort(col){
+    if(this._sortCol===col){this._sortDir*=-1;}else{this._sortCol=col;this._sortDir=1;}
+    const perfilId=S.perfilAtivo;
+    const perfil=S.perfis.find(p=>p.id===perfilId);
+    if(!perfil) return;
+    const fn={
+      ticker:(a)=>a.ticker,
+      inv:(a)=>a.qtd*a.precoMedio,
+      at:(a)=>a.qtd*(a.precoAtual||a.precoMedio),
+      lucro:(a)=>(a.qtd*(a.precoAtual||a.precoMedio))-(a.qtd*a.precoMedio),
+      pct:(a)=>{const inv=a.qtd*a.precoMedio;return inv>0?((a.qtd*(a.precoAtual||a.precoMedio)-inv)/inv)*100:0;},
+      dia:(a)=>a.changeDay||0
+    }[col]||(a=>a.ticker);
+    perfil.ativos.sort((a,b)=>{const va=fn(a),vb=fn(b);return typeof va==='string'?va.localeCompare(vb)*this._sortDir:(vb-va)*this._sortDir*-1;});
+    // Atualiza ícones
+    ['ticker','inv','at','lucro','pct','dia'].forEach(c=>{const el=document.getElementById('srt-'+c);if(el)el.textContent='';});
+    const icon=document.getElementById('srt-'+col);
+    if(icon) icon.textContent=this._sortDir===1?' ↑':' ↓';
+    // Re-renderiza só o tbody
+    const tb=document.getElementById('tCart');
+    if(!tb) return;
+    tb.innerHTML='';
+    perfil.ativos.forEach(a=>{
+      const inv=a.qtd*a.precoMedio,at=a.qtd*(a.precoAtual||a.precoMedio),l=at-inv,p=inv>0?(l/inv)*100:0;
+      const up=a.atualizadoEm?new Date(a.atualizadoEm).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td><strong>${a.ticker}</strong><br><span class="seg">${a.nome||''}</span></td>
+        <td><span class="tipo-badge" style="background:${TIPO_COLORS[a.tipo]||'#94a3b8'}22;color:${TIPO_COLORS[a.tipo]||'#94a3b8'}">${a.tipo}</span></td>
+        <td>${a.qtd}</td><td class="muted">${fmt(a.precoMedio)}</td>
+        <td>${a.precoAtual?fmt(a.precoAtual):'<span class="muted">—</span>'}<br><span class="seg muted">${up}</span></td>
+        <td class="muted">${fmt(inv)}</td>
+        <td class="${at>=inv?'green':'red'}">${fmt(at)}</td>
+        <td class="${l>=0?'green':'red'}">${fmt(l)}</td>
+        <td><span class="badge ${p>=0?'bp':'bn'}">${fmtP(p)}</span></td>
+        <td class="${(a.changeDay||0)>=0?'green':'red'}" style="font-size:12px">${a.changeDay?fmtP(a.changeDay):'—'}</td>
+        <td style="white-space:nowrap">
+          <button class="btn-icon" onclick="CART.openModal('${a.id}','${S.perfilAtivo}')">✎</button>
+          <button class="btn-icon del" onclick="CART.delAtivo('${a.id}','${S.perfilAtivo}')">✕</button>
+        </td>`;
+      tb.appendChild(tr);
+    });
+  },
+  exportCSV(perfilId){
+    const perfil=S.perfis.find(p=>p.id===perfilId);
+    if(!perfil) return;
+    const rows=[['Ticker','Nome','Tipo','Qtd','P.Médio','P.Atual','Investido','Atual','Lucro R$','Lucro %','Variação Dia']];
+    (perfil.ativos||[]).forEach(a=>{
+      const inv=a.qtd*a.precoMedio,at=a.qtd*(a.precoAtual||a.precoMedio),l=at-inv,p=inv>0?(l/inv)*100:0;
+      rows.push([a.ticker,a.nome||'',a.tipo,a.qtd,a.precoMedio.toFixed(2),(a.precoAtual||'').toString(),inv.toFixed(2),at.toFixed(2),l.toFixed(2),p.toFixed(2)+'%',(a.changeDay||0).toFixed(2)+'%']);
+    });
+    const csv=rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
+    const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`carteira_${perfil.nome}_${new Date().toLocaleDateString('pt-BR').replace(/\//g,'-')}.csv`;a.click();
   },
   openPerfil(){APP.closeDD();document.getElementById('fp_nome').value='';document.getElementById('fp_cor').value=PERFIL_CORES[S.perfis.length%PERFIL_CORES.length];document.getElementById('modalPerfil').classList.add('open');},
   closePerfil(){document.getElementById('modalPerfil').classList.remove('open');},
@@ -877,12 +995,22 @@ window.DIVS = {
       const extraidos = corretora === 'RICO' ? parsearRICO(workbook) : parsearAGORA(workbook);
       const resultados = montarResultados(extraidos, ativos);
       if (resultados.length > 0) {
-        // Salva no Firebase por perfilId — persiste entre sessões
+        // Merge com proventos já salvos — evita perda de histórico
         try {
           const snap = await dbGet('proventos');
           const atual = snap.exists() ? (snap.data().porPerfil || {}) : {};
-          atual[perfilId] = { resultados, updatedAt: Date.now(), corretora };
+          const existentes = (atual[perfilId]?.resultados || []);
+          // Chave única por ticker+data+provento para evitar duplicatas
+          const chave = r => `${r.ticker}|${r.data}|${r.provento}`;
+          const mapaExist = {};
+          existentes.forEach(r => { mapaExist[chave(r)] = r; });
+          // Novos sobrescrevem existentes com mesma chave (atualiza valores)
+          resultados.forEach(r => { mapaExist[chave(r)] = r; });
+          const merged = Object.values(mapaExist).sort((a,b) => b.data.localeCompare(a.data));
+          atual[perfilId] = { resultados: merged, updatedAt: Date.now(), corretora,
+            totalImportacoes: (atual[perfilId]?.totalImportacoes || 0) + 1 };
           await dbSet('proventos', { porPerfil: atual, updatedAt: Date.now() });
+          resultados.splice(0, resultados.length, ...merged); // usa merged para render
         } catch(e2) { console.warn('Erro ao salvar proventos:', e2); }
       }
       renderDivsResult(resultados);
@@ -898,7 +1026,6 @@ window.DIVS = {
     if (input) input.value = '';
   },
 
-  // Carrega proventos salvos do Firebase para um perfil
   async carregar(perfilId) {
     const container = document.getElementById('divsContent');
     if (!container) return;
@@ -910,18 +1037,136 @@ window.DIVS = {
         if (dados && dados.resultados && dados.resultados.length > 0) {
           const dt = new Date(dados.updatedAt).toLocaleDateString('pt-BR');
           renderDivsResult(dados.resultados);
-          // Mostra data da última importação no botão
           const btn = document.getElementById('btnDivs');
-          if (btn) btn.title = `Última importação: ${dt} (${dados.corretora})`;
+          if (btn) btn.title = `Última importação: ${dt} (${dados.corretora}) — ${dados.totalImportacoes||1} importação(ões)`;
           return;
         }
       }
     } catch(e) { console.warn('Erro ao carregar proventos:', e); }
+  },
+
+  exportCSV(perfilId) {
+    // Exporta proventos do estado atual
+    const container = document.getElementById('divsContent');
+    const rows = [['Ticker','Tipo','Provento','Data','Cotas','Valor/Cota','Bruto','IR','Líquido','Isento']];
+    // Tenta pegar dos dados salvos
+    dbGet('proventos').then(snap => {
+      if (!snap.exists()) return;
+      const dados = (snap.data().porPerfil || {})[perfilId];
+      if (!dados?.resultados?.length) { alert('Nenhum provento para exportar.'); return; }
+      dados.resultados.forEach(r => {
+        rows.push([r.ticker, r.tipo, r.provento, r.data, r.qtd,
+          (r.valorCota||0).toFixed(6), (r.bruto||0).toFixed(2),
+          (r.ir||0).toFixed(2), (r.liquido||0).toFixed(2), r.isento?'Sim':'Não']);
+      });
+      const csv = rows.map(r => r.map(v => '"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
+      const blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `proventos_${perfilId}_${new Date().toLocaleDateString('pt-BR').replace(/\//g,'-')}.csv`;
+      a.click();
+    }).catch(e => console.warn('exportCSV proventos:', e));
+  },
+
+  async limpar(perfilId) {
+    if (!confirm('Limpar todo o histórico de proventos desta carteira? Esta ação não pode ser desfeita.')) return;
+    try {
+      const snap = await dbGet('proventos');
+      const atual = snap.exists() ? (snap.data().porPerfil || {}) : {};
+      delete atual[perfilId];
+      await dbSet('proventos', { porPerfil: atual, updatedAt: Date.now() });
+      const container = document.getElementById('divsContent');
+      if (container) container.innerHTML = '<div class="empty" style="padding:1.5rem"><p style="font-size:13px">Histórico limpo. Importe um novo extrato XLSX.</p></div>';
+    } catch(e) { console.warn('Erro ao limpar proventos:', e); }
   }
 };
 
 
 // ── CONSOLIDADO ───────────────────────────────────────────────
+// ── APORTES ───────────────────────────────────────────────────
+window.APORTE={
+  async add(perfilId){
+    const mes=document.getElementById('aporteMonth')?.value;
+    const val=parseFloat(document.getElementById('aporteValor')?.value);
+    if(!mes||isNaN(val)||val<=0){alert('Informe o mês e o valor.');return;}
+    try{
+      const snap=await dbGet('aportes');
+      const atual=snap.exists()?(snap.data().porPerfil||{}):{};
+      if(!atual[perfilId]) atual[perfilId]=[];
+      // Substitui se mesmo mês
+      const idx=atual[perfilId].findIndex(a=>a.mes===mes);
+      if(idx>=0) atual[perfilId][idx].valor=val;
+      else atual[perfilId].push({mes,valor:val});
+      atual[perfilId].sort((a,b)=>a.mes.localeCompare(b.mes));
+      await dbSet('aportes',{porPerfil:atual,updatedAt:Date.now()});
+      document.getElementById('aporteValor').value='';
+      this.render(perfilId);
+    }catch(e){console.warn('Erro ao salvar aporte:',e);}
+  },
+  async del(perfilId,mes){
+    if(!confirm('Remover aporte de '+mes+'?')) return;
+    try{
+      const snap=await dbGet('aportes');
+      const atual=snap.exists()?(snap.data().porPerfil||{}):{};
+      if(atual[perfilId]) atual[perfilId]=atual[perfilId].filter(a=>a.mes!==mes);
+      await dbSet('aportes',{porPerfil:atual,updatedAt:Date.now()});
+      this.render(perfilId);
+    }catch(e){console.warn('Erro ao deletar aporte:',e);}
+  },
+  async render(perfilId){
+    const el=document.getElementById('aporteContent');
+    if(!el) return;
+    try{
+      const snap=await dbGet('aportes');
+      const aportes=(snap.exists()?(snap.data().porPerfil||{}):{} )[perfilId]||[];
+      if(!aportes.length){
+        el.innerHTML='<div class="empty" style="padding:1rem"><p style="font-size:13px">Nenhum aporte registrado ainda.</p></div>';
+        return;
+      }
+      const total=aportes.reduce((s,a)=>s+a.valor,0);
+      const acum=[];let soma=0;
+      aportes.forEach(a=>{soma+=a.valor;acum.push(soma);});
+      const MESES_PT=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+      const fmtMes=m=>{const[y,mo]=m.split('-');return MESES_PT[parseInt(mo)-1]+'/'+y.slice(2);};
+      el.innerHTML=`
+        <div class="metrics" style="margin:0 0 12px">
+          <div class="mc"><div class="ml">Total aportado</div><div class="mv blue">${fmt(total)}</div><div class="ms muted">${aportes.length} meses</div></div>
+          <div class="mc"><div class="ml">Média mensal</div><div class="mv blue">${fmt(total/aportes.length)}</div><div class="ms muted">por mês</div></div>
+          <div class="mc"><div class="ml">Maior aporte</div><div class="mv blue">${fmt(Math.max(...aportes.map(a=>a.valor)))}</div><div class="ms muted">${fmtMes(aportes.reduce((m,a)=>a.valor>m.valor?a:m).mes)}</div></div>
+        </div>
+        <div class="g2" style="margin-bottom:10px">
+          <div class="card" style="padding:.75rem"><div class="card-title">Aportes mensais</div><div class="cw h160"><canvas id="aporteBar"></canvas></div></div>
+          <div class="card" style="padding:.75rem"><div class="card-title">Acumulado</div><div class="cw h160"><canvas id="aporteLine"></canvas></div></div>
+        </div>
+        <div class="divs-scroll" style="max-height:180px">
+          ${[...aportes].reverse().map(a=>`
+          <div class="div-row">
+            <div class="div-row-left">
+              <strong style="font-size:13px">${fmtMes(a.mes)}</strong>
+              <span class="div-meta">${a.mes}</span>
+            </div>
+            <div class="div-row-right">
+              <span class="div-valor" style="color:var(--blue)">${fmt(a.valor)}</span>
+              <button class="btn-ghost" style="font-size:11px;color:var(--red)" onclick="APORTE.del('`+perfilId+`','${a.mes}')">✕ remover</button>
+            </div>
+          </div>`).join('')}
+        </div>`;
+      destroyChart('aporteBar');
+      CH.aporteBar=new Chart(document.getElementById('aporteBar'),{
+        type:'bar',
+        data:{labels:aportes.map(a=>fmtMes(a.mes)),datasets:[{data:aportes.map(a=>a.valor),backgroundColor:'rgba(37,99,235,.65)',borderRadius:3,borderSkipped:false}]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:i=>' '+fmt(i.raw)}}},scales:{x:{grid:{display:false},ticks:{color:TC(),font:{size:9},maxTicksLimit:12}},y:{grid:{color:GC()},ticks:{color:TC(),font:{size:9},callback:v=>'R$'+(v/1000).toFixed(0)+'k'}}}}
+      });
+      destroyChart('aporteLine');
+      CH.aporteLine=new Chart(document.getElementById('aporteLine'),{
+        type:'line',
+        data:{labels:aportes.map(a=>fmtMes(a.mes)),datasets:[{data:acum,borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,.08)',fill:true,tension:.4,pointRadius:3,borderWidth:2,pointBackgroundColor:'#2563eb'}]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:i=>' '+fmt(i.raw)}}},scales:{x:{grid:{display:false},ticks:{color:TC(),font:{size:9},maxTicksLimit:12}},y:{grid:{color:GC()},ticks:{color:TC(),font:{size:9},callback:v=>'R$'+(v/1000).toFixed(0)+'k'}}}}
+      });
+    }catch(e){console.warn('Erro ao renderizar aportes:',e);}
+  }
+};
+
 window.CONS={
   render(){
     const tradeLiq=S.tradePayload?.monthly?.slice(-1)[0]?.acumLiq||0;
@@ -978,18 +1223,33 @@ window.CONS={
 async function init(){
   APP.setStatus('Conectando ao servidor...');
 
-  // Carrega perfis
-  try{const snap=await dbGet('perfis');if(snap.exists())S.perfis=snap.data().lista||[];}catch(e){}
+  // Timeout de segurança — se Firebase travar, mostra o app mesmo assim após 5s
+  const fallbackTimer = setTimeout(() => {
+    if(document.getElementById('upload-overlay').style.display !== 'none'){
+      APP.showMain(); buildNav();
+    }
+  }, 5000);
+
+  // Carrega perfis com timeout individual de 8s
+  try{
+    const snap = await Promise.race([
+      dbGet('perfis'),
+      new Promise((_,rej) => setTimeout(()=>rej(new Error('timeout')), 8000))
+    ]);
+    if(snap.exists()) S.perfis = snap.data().lista || [];
+  }catch(e){ console.warn('Erro ao carregar perfis:', e.message); }
+
   if(S.perfis.length===0){
     S.perfis=[{id:'minha',nome:'Minha Carteira',cor:'#3b82f6',ativos:[]},{id:'gigi',nome:'Carteira Gigi',cor:'#ec4899',ativos:[]}];
-    await dbSet('perfis',{lista:S.perfis,updatedAt:Date.now()});
+    try{ await dbSet('perfis',{lista:S.perfis,updatedAt:Date.now()}); }catch(e){}
   }
   S.perfilAtivo=S.perfis[0].id;
 
   // Carrega meta
   try{const snap=await dbGet('meta');if(snap.exists())S.meta=snap.data().meta||null;}catch(e){}
 
-  // Mostra o app imediatamente, sem esperar o snapshot
+  // Mostra o app imediatamente
+  clearTimeout(fallbackTimer);
   APP.showMain();buildNav();
 
   // Escuta trade
