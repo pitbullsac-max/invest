@@ -625,6 +625,7 @@ window.CART={
 
     if(ativos.length>0){
       const tb=document.getElementById('tCart');
+      tb.innerHTML=''; // limpa skeleton antes de popular com dados reais
       ativos.forEach(a=>{
         const inv=a.qtd*a.precoMedio,at=a.qtd*(a.precoAtual||a.precoMedio),l=at-inv,p=inv>0?(l/inv)*100:0;
         const up=a.atualizadoEm?new Date(a.atualizadoEm).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
