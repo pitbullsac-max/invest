@@ -349,9 +349,22 @@ async function refreshAllPrecos(perfilId, silent=false){
   if(criptos.length > 0){
     try{
       const ids = [...new Set(criptos.map(a=>cryptoId(a.ticker)))].join(',');
-      const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=brl&include_24hr_change=true`);
-      if(r.ok) cryptoBatch = await r.json();
-    }catch(e){ console.warn('CoinGecko batch erro:', e.message); }
+      console.log('[Cripto] Buscando IDs:', ids);
+      const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=brl&include_24hr_change=true`;
+      const r = await fetch(url);
+      console.log('[Cripto] Status HTTP:', r.status);
+      if(r.ok){
+        cryptoBatch = await r.json();
+        console.log('[Cripto] Resposta:', JSON.stringify(cryptoBatch));
+      } else {
+        const txt = await r.text();
+        console.warn('[Cripto] Erro resposta:', txt);
+      }
+    }catch(e){
+      console.warn('[Cripto] Exceção:', e.message);
+    }
+  } else {
+    console.log('[Cripto] Nenhum ativo do tipo Cripto encontrado na carteira.');
   }
 
   for(let i=0;i<(perfil.ativos||[]).length;i++){
