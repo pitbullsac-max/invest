@@ -337,7 +337,7 @@ async function fetchDividendos(ticker){
   return [];
 }
 
-async function refreshAllPrecos(perfilId, silent=false){
+window.refreshAllPrecos = async function refreshAllPrecos(perfilId, silent=false){
   const perfil=S.perfis.find(p=>p.id===perfilId);
   if(!perfil) return;
   const btn=document.getElementById('btnRefresh');
@@ -412,7 +412,7 @@ async function refreshAllPrecos(perfilId, silent=false){
   if(btn&&!silent){btn.disabled=false;btn.textContent='↻ Atualizar preços';}
 }
 
-function startAutoUpdate(perfilId){
+window.startAutoUpdate = function startAutoUpdate(perfilId){
   if(_autoUpdateTimer) clearInterval(_autoUpdateTimer);
   // Cripto atualiza a cada 5min, demais ativos a cada 1h
   // Usamos 5min como intervalo base — brapi ignora se não houver Ação/FII/ETF
