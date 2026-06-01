@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard de Investimentos</title>
+<title>Dashboard de Investimentos v2.0.4</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
@@ -146,6 +146,8 @@ tr:hover td{background:var(--surf2)}
   .modal-bg{align-items:flex-end;padding:0}
   .btn-primary,.btn-sm,.btn{font-size:12px;padding:7px 12px}
 }
+.btn-icon.aporte:hover{background:#dcfce7;color:var(--green);border-color:#86efac}
+@media(prefers-color-scheme:dark){.btn-icon.aporte:hover{background:#14532d;color:#4ade80;border-color:#166534}}
 </style>
 </head>
 <body>
@@ -196,6 +198,46 @@ tr:hover td{background:var(--surf2)}
     <div class="modal-foot">
       <button class="btn-sm" onclick="CART.closeModal()">Cancelar</button>
       <button class="btn-primary" id="btnSalvarAtivo" onclick="CART.salvar()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL APORTE ATIVO -->
+<div class="modal-bg" id="modalAporteAtivo" onclick="if(event.target===this)CART.closeAporteAtivo()">
+  <div class="modal">
+    <div class="modal-head">
+      <div>
+        <h3 id="mAporteTitle">Aportar em ativo</h3>
+        <div class="modal-sub" id="mAporteSub"></div>
+      </div>
+      <button class="btn-ghost" onclick="CART.closeAporteAtivo()">✕</button>
+    </div>
+    <div class="modal-body">
+      <!-- Info atual do ativo -->
+      <div id="mAporteInfoAtual" style="background:var(--surf2);border:1px solid var(--bdr);border-radius:10px;padding:12px;margin-bottom:16px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:3px">Qtd. atual</div><div id="mAporteQtdAtual" style="font-size:15px;font-weight:700">—</div></div>
+        <div><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:3px">P. Médio atual</div><div id="mAportePMAtual" style="font-size:15px;font-weight:700">—</div></div>
+        <div><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:3px">Total investido</div><div id="mAporteTotalAtual" style="font-size:15px;font-weight:700">—</div></div>
+      </div>
+      <!-- Inputs do aporte -->
+      <div class="fg">
+        <div class="fl"><label>Quantidade comprada</label><input id="ma_qtd" type="number" min="0" step="0.01" placeholder="ex: 6" oninput="CART.calcAporte()"></div>
+        <div class="fl"><label>Preço pago por unidade (R$)</label><input id="ma_preco" type="number" min="0" step="0.01" placeholder="ex: 28.50" oninput="CART.calcAporte()"></div>
+        <div class="fl s2"><label>Data do aporte</label><input id="ma_data" type="date" value=""></div>
+      </div>
+      <!-- Preview novo preço médio -->
+      <div id="mAportePreview" style="display:none;margin-top:14px;background:linear-gradient(135deg,rgba(37,99,235,.08),rgba(124,58,237,.06));border:1px solid rgba(37,99,235,.2);border-radius:10px;padding:12px">
+        <div style="font-size:11px;font-weight:700;color:var(--blue);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">📊 Preview após aporte</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+          <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">Nova qtd.</div><div id="prev_qtd" style="font-size:15px;font-weight:700;color:var(--blue)">—</div></div>
+          <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">Novo P. Médio</div><div id="prev_pm" style="font-size:15px;font-weight:700;color:var(--blue)">—</div></div>
+          <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">Valor do aporte</div><div id="prev_val" style="font-size:15px;font-weight:700;color:var(--green)">—</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn-sm" onclick="CART.closeAporteAtivo()">Cancelar</button>
+      <button class="btn-primary" id="btnConfirmarAporte" onclick="CART.confirmarAporteAtivo()">✓ Confirmar aporte</button>
     </div>
   </div>
 </div>
@@ -752,6 +794,7 @@ window.CART={
           <td><span class="badge ${p>=0?'bp':'bn'}">${fmtP(p)}</span></td>
           <td class="${(a.changeDay||0)>=0?'green':'red'}" style="font-size:12px">${a.changeDay?fmtP(a.changeDay):'—'}</td>
           <td style="white-space:nowrap">
+            <button class="btn-icon aporte" title="Aportar neste ativo" onclick="CART.openAporteAtivo('${a.id}','${perfil.id}')" style="color:var(--green);border-color:rgba(5,150,105,.3)">+$</button>
             <button class="btn-icon" onclick="CART.openModal('${a.id}','${perfil.id}')">✎</button>
             <button class="btn-icon del" onclick="CART.delAtivo('${a.id}','${perfil.id}')">✕</button>
           </td>`;
@@ -841,12 +884,83 @@ window.CART={
         <td><span class="badge ${p>=0?'bp':'bn'}">${fmtP(p)}</span></td>
         <td class="${(a.changeDay||0)>=0?'green':'red'}" style="font-size:12px">${a.changeDay?fmtP(a.changeDay):'—'}</td>
         <td style="white-space:nowrap">
+          <button class="btn-icon aporte" title="Aportar neste ativo" onclick="CART.openAporteAtivo('${a.id}','${S.perfilAtivo}')" style="color:var(--green);border-color:rgba(5,150,105,.3)">+$</button>
           <button class="btn-icon" onclick="CART.openModal('${a.id}','${S.perfilAtivo}')">✎</button>
           <button class="btn-icon del" onclick="CART.delAtivo('${a.id}','${S.perfilAtivo}')">✕</button>
         </td>`;
       tb.appendChild(tr);
     });
   },
+
+  // ── APORTE DIRETO NO ATIVO ────────────────────────────────────
+  _aAtivoId:null,_aPerfilId:null,
+  openAporteAtivo(ativoId,perfilId){
+    const perfil=S.perfis.find(p=>p.id===perfilId);
+    const ativo=(perfil?.ativos||[]).find(a=>a.id===ativoId);
+    if(!ativo) return;
+    this._aAtivoId=ativoId; this._aPerfilId=perfilId;
+    document.getElementById('mAporteTitle').textContent='Aportar em '+ativo.ticker;
+    document.getElementById('mAporteSub').textContent=(ativo.nome||'')+' · '+ativo.tipo+(ativo.corretora?' · '+ativo.corretora:'');
+    document.getElementById('mAporteQtdAtual').textContent=ativo.qtd;
+    document.getElementById('mAportePMAtual').textContent=fmt(ativo.precoMedio);
+    document.getElementById('mAporteTotalAtual').textContent=fmt(ativo.qtd*ativo.precoMedio);
+    document.getElementById('ma_qtd').value='';
+    document.getElementById('ma_preco').value='';
+    document.getElementById('ma_data').value=new Date().toISOString().substring(0,10);
+    document.getElementById('mAportePreview').style.display='none';
+    document.getElementById('modalAporteAtivo').classList.add('open');
+  },
+  closeAporteAtivo(){document.getElementById('modalAporteAtivo').classList.remove('open');},
+  calcAporte(){
+    const perfil=S.perfis.find(p=>p.id===this._aPerfilId);
+    const ativo=(perfil?.ativos||[]).find(a=>a.id===this._aAtivoId);
+    if(!ativo) return;
+    const novaQtd=parseFloat(document.getElementById('ma_qtd').value)||0;
+    const novoPreco=parseFloat(document.getElementById('ma_preco').value)||0;
+    if(novaQtd<=0||novoPreco<=0){document.getElementById('mAportePreview').style.display='none';return;}
+    const totalAnterior=ativo.qtd*ativo.precoMedio;
+    const valorAporte=novaQtd*novoPreco;
+    const novaQtdTotal=ativo.qtd+novaQtd;
+    const novoPM=(totalAnterior+valorAporte)/novaQtdTotal;
+    document.getElementById('prev_qtd').textContent=novaQtdTotal.toLocaleString('pt-BR',{maximumFractionDigits:4});
+    document.getElementById('prev_pm').textContent=fmt(novoPM);
+    document.getElementById('prev_val').textContent=fmt(valorAporte);
+    document.getElementById('mAportePreview').style.display='block';
+  },
+  async confirmarAporteAtivo(){
+    const perfil=S.perfis.find(p=>p.id===this._aPerfilId);
+    const ativoIdx=(perfil?.ativos||[]).findIndex(a=>a.id===this._aAtivoId);
+    if(!perfil||ativoIdx<0) return;
+    const ativo=perfil.ativos[ativoIdx];
+    const novaQtd=parseFloat(document.getElementById('ma_qtd').value);
+    const novoPreco=parseFloat(document.getElementById('ma_preco').value);
+    const dataAporte=document.getElementById('ma_data').value;
+    if(!novaQtd||isNaN(novaQtd)||novaQtd<=0||!novoPreco||isNaN(novoPreco)||novoPreco<=0){alert('Informe a quantidade e o preço do aporte.');return;}
+    const btn=document.getElementById('btnConfirmarAporte');
+    btn.disabled=true;btn.textContent='Salvando...';
+    // Recalcula PM ponderado
+    const totalAnterior=ativo.qtd*ativo.precoMedio;
+    const valorAporte=novaQtd*novoPreco;
+    const novaQtdTotal=ativo.qtd+novaQtd;
+    const novoPM=(totalAnterior+valorAporte)/novaQtdTotal;
+    perfil.ativos[ativoIdx]={...ativo,qtd:novaQtdTotal,precoMedio:parseFloat(novoPM.toFixed(6)),atualizadoEm:Date.now()};
+    await dbSet('perfis',{lista:S.perfis,updatedAt:Date.now()});
+    // Registra no histórico de aportes mensais (usa mês da data informada)
+    try{
+      const mes=dataAporte?dataAporte.substring(0,7):new Date().toISOString().substring(0,7);
+      const snap=await dbGet('aportes');
+      const atual=snap.exists()?(snap.data().porPerfil||{}):{};
+      if(!atual[this._aPerfilId]) atual[this._aPerfilId]=[];
+      // Adiciona entrada detalhada de aporte por ativo
+      atual[this._aPerfilId].push({mes,valor:parseFloat(valorAporte.toFixed(2)),ticker:ativo.ticker,tipo:'ativo',data:dataAporte||mes});
+      atual[this._aPerfilId].sort((a,b)=>a.mes.localeCompare(b.mes));
+      await dbSet('aportes',{porPerfil:atual,updatedAt:Date.now()});
+    }catch(e){console.warn('Erro ao registrar aporte:',e);}
+    this.closeAporteAtivo();
+    this.render(this._aPerfilId);
+    btn.disabled=false;btn.textContent='✓ Confirmar aporte';
+  },
+
   exportCSV(perfilId){
     const perfil=S.perfis.find(p=>p.id===perfilId);
     if(!perfil) return;
@@ -1219,12 +1333,21 @@ window.APORTE={
       this.render(perfilId);
     }catch(e){console.warn('Erro ao salvar aporte:',e);}
   },
-  async del(perfilId,mes){
-    if(!confirm('Remover aporte de '+mes+'?')) return;
+  async del(perfilId,mes,data,ticker){
+    if(!confirm('Remover este aporte?')) return;
     try{
       const snap=await dbGet('aportes');
       const atual=snap.exists()?(snap.data().porPerfil||{}):{};
-      if(atual[perfilId]) atual[perfilId]=atual[perfilId].filter(a=>a.mes!==mes);
+      if(atual[perfilId]){
+        if(ticker){
+          // remove aporte de ativo específico por ticker+data
+          atual[perfilId]=atual[perfilId].filter(a=>!(a.ticker===ticker&&(a.data||a.mes)===(data||mes)));
+        } else {
+          // remove primeiro aporte geral do mês
+          const idx=atual[perfilId].findIndex(a=>a.mes===mes&&a.tipo!=='ativo');
+          if(idx>=0) atual[perfilId].splice(idx,1);
+        }
+      }
       await dbSet('aportes',{porPerfil:atual,updatedAt:Date.now()});
       this.render(perfilId);
     }catch(e){console.warn('Erro ao deletar aporte:',e);}
@@ -1240,43 +1363,55 @@ window.APORTE={
         return;
       }
       const total=aportes.reduce((s,a)=>s+a.valor,0);
+      // agrupa por mês para o gráfico (soma todos os aportes do mês)
+      const porMesMap={};
+      aportes.forEach(a=>{porMesMap[a.mes]=(porMesMap[a.mes]||0)+a.valor;});
+      const meses=Object.keys(porMesMap).sort();
       const acum=[];let soma=0;
-      aportes.forEach(a=>{soma+=a.valor;acum.push(soma);});
+      meses.forEach(m=>{soma+=porMesMap[m];acum.push(soma);});
       const MESES_PT=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
       const fmtMes=m=>{const[y,mo]=m.split('-');return MESES_PT[parseInt(mo)-1]+'/'+y.slice(2);};
+      // separa aportes de ativos dos gerais
+      const ativoAportes=aportes.filter(a=>a.tipo==='ativo');
+      const geralAportes=aportes.filter(a=>a.tipo!=='ativo');
+      const totalAtivos=ativoAportes.reduce((s,a)=>s+a.valor,0);
+      const totalGeral=geralAportes.reduce((s,a)=>s+a.valor,0);
       el.innerHTML=`
         <div class="metrics" style="margin:0 0 12px">
-          <div class="mc"><div class="ml">Total aportado</div><div class="mv blue">${fmt(total)}</div><div class="ms muted">${aportes.length} meses</div></div>
-          <div class="mc"><div class="ml">Média mensal</div><div class="mv blue">${fmt(total/aportes.length)}</div><div class="ms muted">por mês</div></div>
-          <div class="mc"><div class="ml">Maior aporte</div><div class="mv blue">${fmt(Math.max(...aportes.map(a=>a.valor)))}</div><div class="ms muted">${fmtMes(aportes.reduce((m,a)=>a.valor>m.valor?a:m).mes)}</div></div>
+          <div class="mc"><div class="ml">Total aportado</div><div class="mv blue">${fmt(total)}</div><div class="ms muted">${aportes.length} registros</div></div>
+          <div class="mc"><div class="ml">Aportes em ativos</div><div class="mv green">${fmt(totalAtivos)}</div><div class="ms muted">${ativoAportes.length} operações</div></div>
+          <div class="mc"><div class="ml">Aportes gerais</div><div class="mv blue">${fmt(totalGeral)}</div><div class="ms muted">${geralAportes.length} meses</div></div>
         </div>
         <div class="g2" style="margin-bottom:10px">
           <div class="card" style="padding:.75rem"><div class="card-title">Aportes mensais</div><div class="cw h160"><canvas id="aporteBar"></canvas></div></div>
           <div class="card" style="padding:.75rem"><div class="card-title">Acumulado</div><div class="cw h160"><canvas id="aporteLine"></canvas></div></div>
         </div>
-        <div class="divs-scroll" style="max-height:180px">
-          ${[...aportes].reverse().map(a=>`
+        <div class="divs-scroll" style="max-height:220px">
+          ${[...aportes].sort((a,b)=>(b.data||b.mes).localeCompare(a.data||a.mes)).map(a=>`
           <div class="div-row">
             <div class="div-row-left">
-              <strong style="font-size:13px">${fmtMes(a.mes)}</strong>
-              <span class="div-meta">${a.mes}</span>
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                <strong style="font-size:13px">${fmtMes(a.mes)}</strong>
+                ${a.tipo==='ativo'?`<span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;background:rgba(5,150,105,.12);color:var(--green)">📈 ${a.ticker}</span>`:'<span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;background:rgba(37,99,235,.1);color:var(--blue)">💰 geral</span>'}
+              </div>
+              <span class="div-meta">${a.data||a.mes}</span>
             </div>
             <div class="div-row-right">
-              <span class="div-valor" style="color:var(--blue)">${fmt(a.valor)}</span>
-              <button class="btn-ghost" style="font-size:11px;color:var(--red)" onclick="APORTE.del('`+perfilId+`','${a.mes}')">✕ remover</button>
+              <span class="div-valor" style="color:${a.tipo==='ativo'?'var(--green)':'var(--blue)'}">${fmt(a.valor)}</span>
+              <button class="btn-ghost" style="font-size:11px;color:var(--red)" onclick="APORTE.del('`+perfilId+`','${a.mes}','${a.data||''}','${a.tipo==='ativo'?a.ticker:''}')">✕</button>
             </div>
           </div>`).join('')}
         </div>`;
       destroyChart('aporteBar');
       CH.aporteBar=new Chart(document.getElementById('aporteBar'),{
         type:'bar',
-        data:{labels:aportes.map(a=>fmtMes(a.mes)),datasets:[{data:aportes.map(a=>a.valor),backgroundColor:'rgba(37,99,235,.65)',borderRadius:3,borderSkipped:false}]},
+        data:{labels:meses.map(m=>fmtMes(m)),datasets:[{data:meses.map(m=>porMesMap[m]),backgroundColor:'rgba(37,99,235,.65)',borderRadius:3,borderSkipped:false}]},
         options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:i=>' '+fmt(i.raw)}}},scales:{x:{grid:{display:false},ticks:{color:TC(),font:{size:9},maxTicksLimit:12}},y:{grid:{color:GC()},ticks:{color:TC(),font:{size:9},callback:v=>'R$'+(v/1000).toFixed(0)+'k'}}}}
       });
       destroyChart('aporteLine');
       CH.aporteLine=new Chart(document.getElementById('aporteLine'),{
         type:'line',
-        data:{labels:aportes.map(a=>fmtMes(a.mes)),datasets:[{data:acum,borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,.08)',fill:true,tension:.4,pointRadius:3,borderWidth:2,pointBackgroundColor:'#2563eb'}]},
+        data:{labels:meses.map(m=>fmtMes(m)),datasets:[{data:acum,borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,.08)',fill:true,tension:.4,pointRadius:3,borderWidth:2,pointBackgroundColor:'#2563eb'}]},
         options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:i=>' '+fmt(i.raw)}}},scales:{x:{grid:{display:false},ticks:{color:TC(),font:{size:9},maxTicksLimit:12}},y:{grid:{color:GC()},ticks:{color:TC(),font:{size:9},callback:v=>'R$'+(v/1000).toFixed(0)+'k'}}}}
       });
     }catch(e){console.warn('Erro ao renderizar aportes:',e);}
