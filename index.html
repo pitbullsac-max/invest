@@ -270,12 +270,55 @@ let S={view:'trade',perfilAtivo:null,tradePayload:null,tradeUpdAt:null,perfis:[]
 let _autoUpdateTimer=null;
 
 // ── BRAPI — preços + dividendos ───────────────────────────────
+// ── MAPA DE TICKERS CRIPTO → ID COINGECKO ────────────────────
+// Adicione mais conforme necessário
+const CRYPTO_MAP = {
+  'BTC':'bitcoin','ETH':'ethereum','SOL':'solana','BNB':'binancecoin',
+  'XRP':'ripple','ADA':'cardano','DOGE':'dogecoin','DOT':'polkadot',
+  'MATIC':'matic-network','AVAX':'avalanche-2','LINK':'chainlink',
+  'LTC':'litecoin','UNI':'uniswap','ATOM':'cosmos','ALGO':'algorand',
+  'NEAR':'near','FTM':'fantom','SAND':'the-sandbox','MANA':'decentraland',
+  'PEPE':'pepe','SHIB':'shiba-inu','WLD':'worldcoin-wld','RNDR':'render-token',
+  'ARB':'arbitrum','OP':'optimism','INJ':'injective-protocol','SUI':'sui',
+  'SEI':'sei-network','TIA':'celestia','PYTH':'pyth-network','JTO':'jito-governance-token',
+  // aliases comuns
+  'BITCOIN':'bitcoin','ETHEREUM':'ethereum','SOLANA':'solana',
+};
+
+// Resolve o ID CoinGecko a partir do ticker digitado pelo usuário
+function cryptoId(ticker) {
+  const t = ticker.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  return CRYPTO_MAP[t] || t.toLowerCase();
+}
+
+async function fetchCryptoQuote(ticker) {
+  const id = cryptoId(ticker);
+  try {
+    // CoinGecko — gratuito, sem token, global, atualiza a cada ~1min
+    const r = await fetch(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=brl&include_24hr_change=true&include_last_updated_at=true`
+    );
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const coin = d[id];
+    if (coin?.brl) {
+      return {
+        price:  coin.brl,
+        change: coin.brl_24h_change || 0,
+        name:   ticker.toUpperCase(),
+        source: 'CoinGecko'
+      };
+    }
+  } catch(e) { console.warn('CoinGecko erro:', ticker, e.message); }
+  return null;
+}
+
 async function fetchQuote(ticker){
   try{
     const r=await fetch(`https://brapi.dev/api/quote/${ticker}?fundamental=false`);
     const d=await r.json();
     const q=d.results?.[0];
-    if(q?.regularMarketPrice) return {price:q.regularMarketPrice,change:q.regularMarketChangePercent||0,name:q.longName||ticker};
+    if(q?.regularMarketPrice) return {price:q.regularMarketPrice,change:q.regularMarketChangePercent||0,name:q.longName||ticker,source:'brapi'};
   }catch(e){}
   return null;
 }
@@ -299,11 +342,35 @@ async function refreshAllPrecos(perfilId, silent=false){
   if(!perfil) return;
   const btn=document.getElementById('btnRefresh');
   if(btn&&!silent){btn.disabled=true;btn.textContent='Atualizando...';}
+
+  // Separa criptos para busca em lote (mais eficiente)
+  const criptos = (perfil.ativos||[]).filter(a=>a.tipo==='Cripto');
+  let cryptoBatch = {};
+  if(criptos.length > 0){
+    try{
+      const ids = [...new Set(criptos.map(a=>cryptoId(a.ticker)))].join(',');
+      const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=brl&include_24hr_change=true`);
+      if(r.ok) cryptoBatch = await r.json();
+    }catch(e){ console.warn('CoinGecko batch erro:', e.message); }
+  }
+
   for(let i=0;i<(perfil.ativos||[]).length;i++){
     const a=perfil.ativos[i];
     if(['Ação','FII','ETF'].includes(a.tipo)){
       const q=await fetchQuote(a.ticker);
       if(q){perfil.ativos[i].precoAtual=q.price;perfil.ativos[i].changeDay=q.change;perfil.ativos[i].atualizadoEm=Date.now();}
+    } else if(a.tipo==='Cripto'){
+      const id=cryptoId(a.ticker);
+      const coin=cryptoBatch[id];
+      if(coin?.brl){
+        perfil.ativos[i].precoAtual=coin.brl;
+        perfil.ativos[i].changeDay=coin.brl_24h_change||0;
+        perfil.ativos[i].atualizadoEm=Date.now();
+      } else {
+        // fallback individual caso o lote falhe
+        const q=await fetchCryptoQuote(a.ticker);
+        if(q){perfil.ativos[i].precoAtual=q.price;perfil.ativos[i].changeDay=q.change;perfil.ativos[i].atualizadoEm=Date.now();}
+      }
     }
   }
   await dbSet('perfis',{lista:S.perfis,updatedAt:Date.now()});
@@ -313,9 +380,20 @@ async function refreshAllPrecos(perfilId, silent=false){
 
 function startAutoUpdate(perfilId){
   if(_autoUpdateTimer) clearInterval(_autoUpdateTimer);
+  // Cripto atualiza a cada 5min, demais ativos a cada 1h
+  // Usamos 5min como intervalo base — brapi ignora se não houver Ação/FII/ETF
   _autoUpdateTimer=setInterval(()=>{
-    if(S.view==='carteira') refreshAllPrecos(S.perfilAtivo,true);
-  }, 60*60*1000); // a cada 1h
+    if(S.view==='carteira'){
+      const perfil=S.perfis.find(p=>p.id===S.perfilAtivo);
+      const temCripto=(perfil?.ativos||[]).some(a=>a.tipo==='Cripto');
+      const agora=Date.now();
+      const lastUp=(perfil?.ativos||[]).reduce((m,a)=>a.atualizadoEm>m?a.atualizadoEm:m,0);
+      const minutos=(agora-lastUp)/60000;
+      // Cripto: atualiza a cada 5min | Ações: a cada 60min
+      if(temCripto && minutos>=5) refreshAllPrecos(S.perfilAtivo,true);
+      else if(!temCripto && minutos>=60) refreshAllPrecos(S.perfilAtivo,true);
+    }
+  }, 5*60*1000); // verifica a cada 5min
 }
 
 // ── NAV ───────────────────────────────────────────────────────
@@ -674,7 +752,10 @@ window.CART={
     if(!ticker||isNaN(qtd)||isNaN(preco)){alert('Preencha ticker, quantidade e preço médio.');return;}
     const btn=document.getElementById('btnSalvarAtivo');btn.disabled=true;btn.textContent='Salvando...';
     let precoAtual=atual;
-    if(!precoAtual&&['Ação','FII','ETF'].includes(tipo)){const q=await fetchQuote(ticker);if(q)precoAtual=q.price;}
+    if(!precoAtual){
+      if(['Ação','FII','ETF'].includes(tipo)){const q=await fetchQuote(ticker);if(q)precoAtual=q.price;}
+      else if(tipo==='Cripto'){const q=await fetchCryptoQuote(ticker);if(q)precoAtual=q.price;}
+    }
     const perfil=S.perfis.find(p=>p.id===_ePerfilId);
     if(!perfil){btn.disabled=false;btn.textContent='Salvar';return;}
     if(!perfil.ativos)perfil.ativos=[];
