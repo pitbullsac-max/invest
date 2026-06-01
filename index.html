@@ -343,28 +343,49 @@ async function refreshAllPrecos(perfilId, silent=false){
   const btn=document.getElementById('btnRefresh');
   if(btn&&!silent){btn.disabled=true;btn.textContent='Atualizando...';}
 
-  // Separa criptos para busca em lote (mais eficiente)
+  // Painel de debug visível na tela
+  function showDebug(msg, cor='var(--muted)'){
+    let el=document.getElementById('debugPanel');
+    if(!el){
+      el=document.createElement('div');
+      el.id='debugPanel';
+      el.style.cssText='position:fixed;bottom:0;left:0;right:0;background:#0f172a;color:#e2e8f0;font-size:12px;font-family:monospace;padding:12px 16px;z-index:9999;max-height:40vh;overflow-y:auto;border-top:2px solid #334155';
+      el.innerHTML='<div style="display:flex;justify-content:space-between;margin-bottom:8px"><strong style="color:#60a5fa">🔍 Debug Preços</strong><button onclick="document.getElementById(\'debugPanel\').remove()" style="background:transparent;border:none;color:#94a3b8;cursor:pointer;font-size:14px">✕ fechar</button></div><div id="debugLog"></div>';
+      document.body.appendChild(el);
+    }
+    const log=document.getElementById('debugLog');
+    const line=document.createElement('div');
+    line.style.cssText=`color:${cor};padding:2px 0;border-bottom:1px solid #1e293b`;
+    line.textContent=new Date().toLocaleTimeString('pt-BR')+' → '+msg;
+    log.appendChild(line);
+    el.scrollTop=el.scrollHeight;
+  }
+
+  // Separa criptos para busca em lote
   const criptos = (perfil.ativos||[]).filter(a=>a.tipo==='Cripto');
+  showDebug(`Ativos na carteira: ${(perfil.ativos||[]).length} total, ${criptos.length} cripto(s)`);
+  criptos.forEach(a=>showDebug(`  → ticker: "${a.ticker}" | tipo: "${a.tipo}" | ID CoinGecko: "${cryptoId(a.ticker)}"`,'#fbbf24'));
+
   let cryptoBatch = {};
   if(criptos.length > 0){
     try{
       const ids = [...new Set(criptos.map(a=>cryptoId(a.ticker)))].join(',');
-      console.log('[Cripto] Buscando IDs:', ids);
       const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=brl&include_24hr_change=true`;
+      showDebug(`Chamando: ${url}`,'#a78bfa');
       const r = await fetch(url);
-      console.log('[Cripto] Status HTTP:', r.status);
+      showDebug(`HTTP Status: ${r.status}`, r.ok?'#34d399':'#f87171');
       if(r.ok){
         cryptoBatch = await r.json();
-        console.log('[Cripto] Resposta:', JSON.stringify(cryptoBatch));
+        showDebug(`Resposta: ${JSON.stringify(cryptoBatch)}`,'#34d399');
       } else {
         const txt = await r.text();
-        console.warn('[Cripto] Erro resposta:', txt);
+        showDebug(`Erro: ${txt}`,'#f87171');
       }
     }catch(e){
-      console.warn('[Cripto] Exceção:', e.message);
+      showDebug(`Exceção: ${e.message}`,'#f87171');
     }
   } else {
-    console.log('[Cripto] Nenhum ativo do tipo Cripto encontrado na carteira.');
+    showDebug('Nenhum ativo do tipo "Cripto" encontrado. Verifique se o tipo está correto no cadastro.','#f87171');
   }
 
   for(let i=0;i<(perfil.ativos||[]).length;i++){
