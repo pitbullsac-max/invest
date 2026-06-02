@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard de Investimentos v2.2.0</title>
+<title>Dashboard de Investimentos v2.3.0</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
@@ -251,7 +251,7 @@ tr:hover td{background:var(--surf2)}
 <div class="modal-bg" id="modalClaudeInstr" onclick="if(event.target===this)this.classList.remove('open')">
   <div class="modal" style="max-width:560px">
     <div class="modal-head">
-      <div><h3>🤖 Como atualizar via Claude</h3><div class="modal-sub">Siga os 3 passos abaixo</div></div>
+      <div><h3>🤖 Como atualizar via Claude</h3><div class="modal-sub" id="modalClaudeSubtitle">Todas as carteiras em 3 passos</div></div>
       <button class="btn-ghost" onclick="document.getElementById('modalClaudeInstr').classList.remove('open')">✕</button>
     </div>
     <div class="modal-body" style="display:flex;flex-direction:column;gap:16px">
@@ -259,7 +259,7 @@ tr:hover td{background:var(--surf2)}
         <div style="min-width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center">1</div>
         <div>
           <div style="font-weight:600;font-size:13px;margin-bottom:4px">O arquivo JSON foi baixado</div>
-          <div style="font-size:12px;color:var(--muted)">Ele contém todos os seus ativos (ações, FIIs, ETFs) sem os preços preenchidos.</div>
+          <div style="font-size:12px;color:var(--muted)">Ele contém <strong>todos os ativos de todas as suas carteiras</strong> (ações, FIIs, ETFs) agrupados por carteira, sem os preços preenchidos.</div>
         </div>
       </div>
       <div style="display:flex;gap:12px;align-items:flex-start">
@@ -267,24 +267,24 @@ tr:hover td{background:var(--surf2)}
         <div>
           <div style="font-weight:600;font-size:13px;margin-bottom:4px">Abra o Claude e envie o arquivo</div>
           <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Vá em <strong>claude.ai</strong>, clique no clipe 📎, anexe o JSON e envie a mensagem abaixo:</div>
-          <div style="background:var(--surf2);border:1px solid var(--bdr);border-radius:8px;padding:10px 12px;font-size:12px;font-family:monospace;position:relative;cursor:pointer" onclick="navigator.clipboard.writeText(this.dataset.msg);this.querySelector('span').textContent='✅ Copiado!';setTimeout(()=>this.querySelector('span').textContent='📋 Copiar',2000)" data-msg="Atualize as cotações dos ativos neste arquivo JSON com os preços atuais da B3. Preencha precoAtual e variacao para cada ativo e devolva o JSON completo atualizado.">
-            Atualize as cotações dos ativos neste arquivo JSON com os preços atuais da B3. Preencha precoAtual e variacao para cada ativo e devolva o JSON completo atualizado.
-            <span style="position:absolute;top:6px;right:8px;font-size:11px;color:var(--muted)">📋 Copiar</span>
+          <div style="background:var(--surf2);border:1px solid var(--bdr);border-radius:8px;padding:10px 12px;font-size:12px;font-family:monospace;position:relative;cursor:pointer;line-height:1.5" onclick="navigator.clipboard.writeText(this.dataset.msg);this.querySelector('span').textContent='✅ Copiado!';setTimeout(()=>this.querySelector('span').textContent='📋 Copiar',2000)" data-msg="Atualize as cotações dos ativos neste arquivo JSON com os preços atuais da B3. Preencha precoAtual e variacao para cada ativo em todas as carteiras e devolva o JSON completo atualizado.">
+            Atualize as cotações dos ativos neste arquivo JSON com os preços atuais da B3. Preencha precoAtual e variacao para cada ativo em todas as carteiras e devolva o JSON completo atualizado.
+            <span style="position:absolute;top:6px;right:8px;font-size:11px;color:var(--muted);background:var(--surf2);padding:1px 4px">📋 Copiar</span>
           </div>
         </div>
       </div>
       <div style="display:flex;gap:12px;align-items:flex-start">
         <div style="min-width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center">3</div>
         <div>
-          <div style="font-weight:600;font-size:13px;margin-bottom:4px">Baixe o JSON atualizado e importe</div>
-          <div style="font-size:12px;color:var(--muted)">O Claude vai devolver o JSON com os preços preenchidos. Salve o arquivo e clique em <strong>"📥 Importar do Claude"</strong> no dashboard.</div>
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px">Baixe o JSON e importe</div>
+          <div style="font-size:12px;color:var(--muted)">O Claude devolve o JSON com todos os preços preenchidos. Salve o arquivo e clique em <strong>"📥 Importar do Claude"</strong> — todas as carteiras são atualizadas de uma vez.</div>
         </div>
       </div>
       <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;font-size:12px;color:#166534">
-        💡 <strong>Dica:</strong> As criptos continuam sendo atualizadas automaticamente via CoinGecko — você não precisa incluí-las neste fluxo.
+        💡 <strong>Cripto não entra no arquivo</strong> — continua sendo atualizada automaticamente via CoinGecko a cada 5 minutos, sem precisar fazer nada.
       </div>
       <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;font-size:12px;color:#1e40af">
-        🔁 <strong>Frequência sugerida:</strong> Faça isso 1x por dia ou quando quiser ver a carteira atualizada. Leva menos de 1 minuto.
+        🔁 <strong>Frequência sugerida:</strong> Uma vez por dia, antes de abrir o dashboard. Leva menos de 1 minuto e atualiza tudo de uma vez.
       </div>
     </div>
     <div class="modal-foot">
@@ -394,37 +394,60 @@ async function fetchCryptoQuote(ticker){
   return null;
 }
 
-// ── EXPORTAR JSON PARA ATUALIZAÇÃO VIA CLAUDE ─────────────────
-window.exportarParaClaude = function exportarParaClaude(perfilId){
-  const perfil = S.perfis.find(p=>p.id===perfilId);
-  if(!perfil) return;
+// ── TOAST HELPER ──────────────────────────────────────────────
+function showToast(msg, ok=null){
+  let toast=document.getElementById('priceToast');
+  if(!toast){
+    toast=document.createElement('div');
+    toast.id='priceToast';
+    toast.style.cssText='position:fixed;bottom:1.5rem;right:1.5rem;background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:12px 18px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.18);z-index:9999;display:flex;align-items:center;gap:10px;transition:opacity .3s';
+    document.body.appendChild(toast);
+  }
+  const icon = ok===null?'⏳':ok?'✅':'⚠️';
+  toast.innerHTML=`<span style="font-size:16px">${icon}</span><span>${msg}</span>`;
+  toast.style.opacity='1';
+  if(ok!==null) setTimeout(()=>{ toast.style.opacity='0'; }, 4000);
+}
 
-  const ativos = (perfil.ativos||[]).filter(a=>
-    ['Ação','FII','ETF','BDR','Outro'].includes(a.tipo)
-  );
-  if(!ativos.length){ alert('Nenhum ativo de ações/FII/ETF para atualizar.'); return; }
+// ── EXPORTAR TODAS AS CARTEIRAS PARA CLAUDE ───────────────────
+window.exportarParaClaude = function exportarParaClaude(){
+  // Coleta ativos de TODAS as carteiras (exceto cripto — atualiza via CoinGecko)
+  const carteiras = S.perfis.map(perfil => ({
+    perfilId:   perfil.id,
+    perfilNome: perfil.nome,
+    ativos: (perfil.ativos||[])
+      .filter(a => ['Ação','FII','ETF','BDR','Outro'].includes(a.tipo))
+      .map(a => ({
+        id:         a.id,
+        ticker:     a.ticker,
+        nome:       a.nome||'',
+        tipo:       a.tipo,
+        precoAtual: 0,
+        variacao:   0
+      }))
+  })).filter(c => c.ativos.length > 0);
+
+  if(!carteiras.length){
+    alert('Nenhum ativo de ações/FII/ETF encontrado em nenhuma carteira.');
+    return;
+  }
+
+  const totalAtivos = carteiras.reduce((s,c)=>s+c.ativos.length, 0);
 
   const payload = {
     _instrucoes: [
       "INSTRUÇÕES PARA O CLAUDE:",
-      "1. Busque na internet a cotação ATUAL em BRL de cada ativo abaixo (pregão mais recente da B3)",
-      "2. Preencha o campo 'precoAtual' com o preço em reais (ex: 28.50)",
-      "3. Preencha o campo 'variacao' com a variação % do dia (ex: 1.23 ou -0.45)",
-      "4. NÃO altere nenhum outro campo (ticker, qtd, precoMedio, id, tipo, etc)",
-      "5. Retorne o JSON completo atualizado para que eu possa importar de volta",
-      "6. Se não encontrar um ativo, mantenha precoAtual: 0 e variacao: 0"
+      "1. Busque na internet a cotação ATUAL em BRL de TODOS os ativos abaixo (pregão mais recente da B3)",
+      "2. Para cada ativo, preencha 'precoAtual' com o preço em reais (ex: 28.50)",
+      "3. Preencha 'variacao' com a variação % do dia (ex: 1.23 ou -0.45)",
+      "4. NÃO altere nenhum outro campo (id, ticker, nome, tipo, perfilId, perfilNome)",
+      "5. Retorne o JSON completo e atualizado — todas as carteiras juntas",
+      "6. Se não encontrar um ativo, mantenha precoAtual: 0 e variacao: 0",
+      `Total: ${carteiras.length} carteira(s), ${totalAtivos} ativo(s)`
     ],
-    perfilId: perfil.id,
-    perfilNome: perfil.nome,
-    geradoEm: new Date().toISOString(),
-    ativos: ativos.map(a=>({
-      id: a.id,
-      ticker: a.ticker,
-      nome: a.nome||'',
-      tipo: a.tipo,
-      precoAtual: 0,
-      variacao: 0
-    }))
+    geradoEm:   new Date().toISOString(),
+    totalAtivos,
+    carteiras
   };
 
   const json = JSON.stringify(payload, null, 2);
@@ -432,16 +455,15 @@ window.exportarParaClaude = function exportarParaClaude(perfilId){
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
   a.href = url;
-  a.download = `cotacoes_${perfil.nome.replace(/\s+/g,'_')}_${new Date().toLocaleDateString('pt-BR').replace(/\//g,'-')}.json`;
+  a.download = `cotacoes_todas_carteiras_${new Date().toLocaleDateString('pt-BR').replace(/\//g,'-')}.json`;
   a.click();
   URL.revokeObjectURL(url);
 
-  // Mostra modal com instruções
   document.getElementById('modalClaudeInstr').classList.add('open');
 }
 
 // ── IMPORTAR JSON ATUALIZADO PELO CLAUDE ──────────────────────
-window.importarDoClaude = function importarDoClaude(perfilId){
+window.importarDoClaude = function importarDoClaude(){
   const input = document.createElement('input');
   input.type  = 'file';
   input.accept = '.json';
@@ -452,44 +474,41 @@ window.importarDoClaude = function importarDoClaude(perfilId){
       const text = await file.text();
       const data = JSON.parse(text);
 
-      if(!data.ativos || !Array.isArray(data.ativos)){
-        alert('Arquivo inválido. Use o arquivo gerado pelo botão "Exportar para Claude".');
+      // Suporta formato novo (multi-carteira) e antigo (single)
+      let carteiras = [];
+      if(data.carteiras && Array.isArray(data.carteiras)){
+        carteiras = data.carteiras;                          // novo: todas as carteiras
+      } else if(data.ativos && Array.isArray(data.ativos)){
+        carteiras = [{ perfilId: data.perfilId, ativos: data.ativos }]; // legado
+      } else {
+        alert('Arquivo inválido. Use o arquivo gerado pelo botão "Exportar p/ Claude".');
         return;
       }
 
-      const perfil = S.perfis.find(p=>p.id===perfilId);
-      if(!perfil){ alert('Carteira não encontrada.'); return; }
+      let totalAtualizados = 0;
 
-      let atualizados = 0;
-      data.ativos.forEach(item => {
-        if(!item.precoAtual || item.precoAtual <= 0) return;
-        const idx = perfil.ativos.findIndex(a=>a.id===item.id||a.ticker===item.ticker);
-        if(idx>=0){
-          perfil.ativos[idx].precoAtual  = parseFloat(item.precoAtual);
-          perfil.ativos[idx].changeDay   = parseFloat(item.variacao||0);
-          perfil.ativos[idx].atualizadoEm = Date.now();
-          atualizados++;
-        }
+      carteiras.forEach(c => {
+        const perfil = S.perfis.find(p => p.id === c.perfilId);
+        if(!perfil) return;
+        (c.ativos||[]).forEach(item => {
+          if(!item.precoAtual || item.precoAtual <= 0) return;
+          const idx = perfil.ativos.findIndex(a => a.id===item.id || a.ticker===item.ticker);
+          if(idx >= 0){
+            perfil.ativos[idx].precoAtual  = parseFloat(item.precoAtual);
+            perfil.ativos[idx].changeDay   = parseFloat(item.variacao||0);
+            perfil.ativos[idx].atualizadoEm = Date.now();
+            totalAtualizados++;
+          }
+        });
       });
 
       await dbSet('perfis',{lista:S.perfis,updatedAt:Date.now()});
-
-      // Toast de sucesso
-      let toast=document.getElementById('priceToast');
-      if(!toast){
-        toast=document.createElement('div');
-        toast.id='priceToast';
-        toast.style.cssText='position:fixed;bottom:1.5rem;right:1.5rem;background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:12px 18px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.18);z-index:9999;display:flex;align-items:center;gap:10px;transition:opacity .3s';
-        document.body.appendChild(toast);
-      }
-      toast.innerHTML=`<span style="font-size:16px">✅</span><span>${atualizados} ativo(s) atualizado(s) com sucesso!</span>`;
-      toast.style.opacity='1';
-      setTimeout(()=>{ toast.style.opacity='0'; }, 4000);
-
-      if(S.view==='carteira'&&S.perfilAtivo===perfilId) CART.render(perfilId);
+      showToast(`${totalAtualizados} ativo(s) em ${carteiras.length} carteira(s) atualizados!`, true);
+      if(S.view==='carteira') CART.render(S.perfilAtivo);
+      if(S.view==='consolidado') CONS.render();
 
     }catch(err){
-      alert('Erro ao ler o arquivo: '+err.message);
+      showToast('Erro ao ler o arquivo: '+err.message, false);
     }
   };
   input.click();
@@ -525,6 +544,7 @@ window.refreshAllPrecos = async function refreshAllPrecos(perfilId, silent=false
         }
       });
       await dbSet('perfis',{lista:S.perfis,updatedAt:Date.now()});
+      if(!silent) showToast(`Cripto atualizada via CoinGecko!`, true);
       if(S.view==='carteira'&&S.perfilAtivo===perfilId) CART.render(perfilId);
     }
   }catch(e){console.warn('CoinGecko batch erro:',e);}
@@ -783,8 +803,8 @@ window.CART={
           <span style="font-size:11px;color:var(--muted)">preços: ${lastUpStr}</span>
           ${(perfil.ativos||[]).some(a=>a.tipo==='Cripto')?`<span class="auto-badge">🟡 cripto auto 5min</span>`:''}
           <button class="btn-sm" id="btnRefreshCripto" onclick="refreshAllPrecos('${perfil.id}')" ${!(perfil.ativos||[]).some(a=>a.tipo==='Cripto')?'style="display:none"':''}>↻ Cripto</button>
-          <button class="btn-sm" style="background:linear-gradient(135deg,#eff6ff,#dbeafe);border-color:#bfdbfe;color:#1d4ed8;font-weight:600" onclick="exportarParaClaude('${perfil.id}')" title="Exporta JSON para atualizar via Claude">📤 Exportar p/ Claude</button>
-          <button class="btn-sm" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);border-color:#bbf7d0;color:#166534;font-weight:600" onclick="importarDoClaude('${perfil.id}')" title="Importa JSON atualizado pelo Claude">📥 Importar do Claude</button>
+          <button class="btn-sm" style="background:linear-gradient(135deg,#eff6ff,#dbeafe);border-color:#bfdbfe;color:#1d4ed8;font-weight:600" onclick="exportarParaClaude()" title="Exporta todas as carteiras em um JSON para atualizar via Claude">📤 Exportar p/ Claude</button>
+          <button class="btn-sm" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);border-color:#bbf7d0;color:#166534;font-weight:600" onclick="importarDoClaude()" title="Importa JSON atualizado pelo Claude — atualiza todas as carteiras">📥 Importar do Claude</button>
           <button class="btn-sm" onclick="CART.exportCSV('${perfil.id}')" title="Exportar carteira em CSV">⬇ CSV</button>
           <button class="btn-primary" onclick="CART.openModal(null,'${perfil.id}')">+ Adicionar ativo</button>
         </div>
