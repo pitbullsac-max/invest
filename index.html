@@ -375,10 +375,8 @@ const fmtP = v => (v>=0?'+':'')+Number(v||0).toFixed(2)+'%';
 const EYE_OPEN  = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_SHUT  = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 
-(function initPrivacy(){
-  if(localStorage.getItem('privacy')==='1') document.body.classList.add('privacy');
-  updateEyeIcon();
-})();
+// Aplica classe no body imediatamente (não depende do botão existir)
+if(localStorage.getItem('privacy')==='1') document.body.classList.add('privacy');
 
 function updateEyeIcon(){
   const btn = document.getElementById('btnPrivacy');
@@ -652,7 +650,7 @@ window.APP={
   goTrade(){S.view='trade';this.closeDD();buildNav();TRADE.render(S.tradePayload,S.tradeUpdAt);},
   goPerfil(id){S.view='carteira';S.perfilAtivo=id;this.closeDD();buildNav();CART.render(id);startAutoUpdate(id);},
   goConsolidado(){S.view='consolidado';this.closeDD();buildNav();CONS.render();},
-  showMain(){document.getElementById('upload-overlay').style.display='none';document.getElementById('main-app').style.display='block';},
+  showMain(){document.getElementById('upload-overlay').style.display='none';document.getElementById('main-app').style.display='block';updateEyeIcon();},
   showUpload(){document.getElementById('upload-overlay').style.display='flex';document.getElementById('main-app').style.display='none';},
   setStatus(msg){const el=document.getElementById('upload-status');if(el)el.textContent=msg;},
   drop(e){e.preventDefault();document.getElementById('dropzone').classList.remove('drag');const f=e.dataTransfer.files[0];if(f)this.upload({target:{files:[f]}});},
