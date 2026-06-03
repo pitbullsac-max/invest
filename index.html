@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard de Investimentos v2.3.0</title>
+<title>Dashboard de Investimentos v2.4.0</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
@@ -153,8 +153,23 @@ tr:hover td{background:var(--surf2)}
   #modalClaudeInstr .modal-body [style*="#eff6ff"]{background:#1e3a5f!important;border-color:#1e40af!important;color:#93c5fd!important}
   #modalClaudeInstr .modal-body [style*="background:var(--surf2)"]{color:var(--txt)!important}
 }
+/* ── MODO PRIVACIDADE ─────────────────────────────────────── */
+.btn-eye{background:transparent;border:none;cursor:pointer;padding:4px 8px;border-radius:8px;color:var(--muted);font-size:18px;line-height:1;transition:color .2s,background .2s;margin-left:auto}
+.btn-eye:hover{background:var(--surf2);color:var(--txt)}
+.private-val{
+  display:inline-block;
+  filter:blur(0);
+  transition:filter .25s ease, opacity .25s ease;
+}
+body.privacy .private-val{
+  filter:blur(7px);
+  opacity:.55;
+  pointer-events:none;
+  user-select:none;
+}
+/* Badge variação % não fica borrado — só valores absolutos */
+body.privacy .badge{ filter:blur(7px); opacity:.55; }
 </style>
-</head>
 <body>
 
 <div id="upload-overlay">
@@ -178,6 +193,12 @@ tr:hover td{background:var(--surf2)}
   <nav class="navbar">
     <span class="navbar-brand">📊 Investimentos</span>
     <div id="nav-tabs" style="display:flex;align-items:center;gap:4px"></div>
+    <button class="btn-eye" id="btnPrivacy" onclick="togglePrivacy()" title="Mostrar / ocultar valores">
+      <svg id="eyeIcon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+    </button>
   </nav>
   <div class="content" id="content"></div>
 </div>
@@ -346,8 +367,34 @@ const dbSet = (id,data)=> setDoc(doc(DB,'investimentos',id),data);
 const dbWatch=(id,cb)  => onSnapshot(doc(DB,'investimentos',id),cb);
 
 // ── HELPERS ───────────────────────────────────────────────────
-const fmt  = v => Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:2,maximumFractionDigits:2});
+const _fmtRaw = v => Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:2,maximumFractionDigits:2});
+const fmt  = v => `<span class="private-val">${_fmtRaw(v)}</span>`;
 const fmtP = v => (v>=0?'+':'')+Number(v||0).toFixed(2)+'%';
+
+// ── MODO PRIVACIDADE ──────────────────────────────────────────
+const EYE_OPEN  = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_SHUT  = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
+(function initPrivacy(){
+  if(localStorage.getItem('privacy')==='1') document.body.classList.add('privacy');
+  updateEyeIcon();
+})();
+
+function updateEyeIcon(){
+  const btn = document.getElementById('btnPrivacy');
+  if(!btn) return;
+  const hidden = document.body.classList.contains('privacy');
+  btn.innerHTML = hidden ? EYE_SHUT : EYE_OPEN;
+  btn.title     = hidden ? 'Mostrar valores' : 'Ocultar valores';
+  btn.style.color = hidden ? 'var(--blue)' : '';
+}
+
+function togglePrivacy(){
+  document.body.classList.toggle('privacy');
+  const hidden = document.body.classList.contains('privacy');
+  localStorage.setItem('privacy', hidden ? '1' : '0');
+  updateEyeIcon();
+}
 const n    = v => (typeof v==='number'&&isFinite(v))?v:0;
 const isDark  = ()=>window.matchMedia('(prefers-color-scheme:dark)').matches;
 const GC      = ()=>isDark()?'rgba(255,255,255,.07)':'rgba(0,0,0,.06)';
