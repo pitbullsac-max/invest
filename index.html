@@ -387,7 +387,7 @@ function updateEyeIcon(){
   btn.style.color = hidden ? 'var(--blue)' : '';
 }
 
-function togglePrivacy(){
+window.togglePrivacy = function togglePrivacy(){
   document.body.classList.toggle('privacy');
   const hidden = document.body.classList.contains('privacy');
   localStorage.setItem('privacy', hidden ? '1' : '0');
