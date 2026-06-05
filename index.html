@@ -896,7 +896,7 @@ window.CART={
         <div class="table-wrap"><table>
           <thead><tr>
             <th onclick="CART.sort('ticker')" style="cursor:pointer;user-select:none">Ativo <span id="srt-ticker"></span></th>
-            <th>Tipo</th><th>Qtd</th><th>P. Médio</th><th>P. Atual</th>
+            <th onclick="CART.sort('tipo')" style="cursor:pointer;user-select:none">Tipo <span id="srt-tipo"></span></th><th>Qtd</th><th>P. Médio</th><th>P. Atual</th>
             <th onclick="CART.sort('inv')" style="cursor:pointer;user-select:none">Investido <span id="srt-inv"></span></th>
             <th onclick="CART.sort('at')" style="cursor:pointer;user-select:none">Atual <span id="srt-at"></span></th>
             <th onclick="CART.sort('lucro')" style="cursor:pointer;user-select:none">Lucro R$ <span id="srt-lucro"></span></th>
@@ -1023,6 +1023,7 @@ window.CART={
     if(!perfil) return;
     const fn={
       ticker:(a)=>a.ticker,
+      tipo:(a)=>a.tipo||'',
       inv:(a)=>a.qtd*a.precoMedio,
       at:(a)=>a.qtd*(a.precoAtual||a.precoMedio),
       lucro:(a)=>(a.qtd*(a.precoAtual||a.precoMedio))-(a.qtd*a.precoMedio),
@@ -1031,7 +1032,7 @@ window.CART={
     }[col]||(a=>a.ticker);
     perfil.ativos.sort((a,b)=>{const va=fn(a),vb=fn(b);return typeof va==='string'?va.localeCompare(vb)*this._sortDir:(vb-va)*this._sortDir*-1;});
     // Atualiza ícones
-    ['ticker','inv','at','lucro','pct','dia'].forEach(c=>{const el=document.getElementById('srt-'+c);if(el)el.textContent='';});
+    ['ticker','tipo','inv','at','lucro','pct','dia'].forEach(c=>{const el=document.getElementById('srt-'+c);if(el)el.textContent='';});
     const icon=document.getElementById('srt-'+col);
     if(icon) icon.textContent=this._sortDir===1?' ↑':' ↓';
     // Re-renderiza só o tbody
