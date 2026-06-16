@@ -427,7 +427,7 @@ const TIPO_COLORS={Ação:'#3b82f6',FII:'#10b981',ETF:'#f59e0b',CDB:'#8b5cf6',Te
 const PERFIL_CORES=['#3b82f6','#ec4899','#10b981','#f59e0b','#8b5cf6','#f97316'];
 
 // ── ESTADO ────────────────────────────────────────────────────
-let S={view:'trade',perfilAtivo:null,tradePayload:null,tradeUpdAt:null,perfis:[],meta:null};
+let S={view:'trade',perfilAtivo:null,tradePayload:null,tradeUpdAt:null,perfis:[],meta:null,tradeAnterior:null};
 let _autoUpdateTimer=null;
 
 // ── COTAÇÕES ─────────────────────────────────────────────────
@@ -687,6 +687,23 @@ window.APP={
         const payload=parseSheet(wb);
         if(!payload||!payload.daily.length){this.setStatus('Erro: planilha não reconhecida.');return;}
         this.setStatus('Salvando na nuvem...');
+        // Guarda saldo anterior antes de sobrescrever
+        try{
+          const snapAnt=await dbGet('dashboard');
+          if(snapAnt.exists()){
+            const ant=snapAnt.data();
+            const monthly=ant.payload?.monthly||[];
+            const ultAnt=monthly[monthly.length-1];
+            if(ultAnt){
+              await dbSet('dashboard_anterior',{
+                acumLiq: ultAnt.acumLiq,
+                acumBruto: ultAnt.acumBruto,
+                label: ultAnt.label,
+                updatedAt: ant.updatedAt||Date.now()
+              });
+            }
+          }
+        }catch(e){}
         await dbSet('dashboard',{payload,updatedAt:Date.now()});
         this.setStatus('✓ Atualizado com sucesso!');
       }catch(err){this.setStatus('Erro: '+err.message);}
@@ -812,6 +829,32 @@ window.TRADE={
         <div class="mc"><div class="ml">${ult.label} líq.</div><div class="mv ${ult.liqMen>=0?'green':'red'}">${fmt(ult.liqMen)}</div><div class="ms muted">IR: ${fmt(ult.desconto)}</div></div>
         <div class="mc"><div class="ml">Taxa média/dia</div><div class="mv amber">${tM.toFixed(4)}%</div><div class="ms muted">${du.length} dias úteis</div></div>
       </div>
+      ${S.tradeAnterior?`
+      <div class="card" style="border-left:3px solid var(--amber);margin-bottom:1rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:20px">📋</span>
+            <div>
+              <div style="font-size:12px;font-weight:600;color:var(--txt)">Planilha anterior <span style="font-weight:400;color:var(--muted)">(${S.tradeAnterior.label})</span></div>
+              <div style="font-size:11px;color:var(--muted)">Enviada em: ${new Date(S.tradeAnterior.updatedAt).toLocaleString('pt-BR')}</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:2rem;flex-wrap:wrap">
+            <div style="text-align:right">
+              <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Saldo bruto anterior</div>
+              <div style="font-size:16px;font-weight:700;color:var(--muted)">${fmt(S.tradeAnterior.acumBruto)}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Saldo líquido anterior</div>
+              <div style="font-size:16px;font-weight:700;color:var(--amber)">${fmt(S.tradeAnterior.acumLiq)}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Evolução líquida</div>
+              <div style="font-size:16px;font-weight:700;color:${sL-S.tradeAnterior.acumLiq>=0?'var(--green)':'var(--red)'}">${fmt(sL-S.tradeAnterior.acumLiq)} <span style="font-size:12px">${fmtP(S.tradeAnterior.acumLiq>0?((sL-S.tradeAnterior.acumLiq)/S.tradeAnterior.acumLiq)*100:0)}</span></div>
+            </div>
+          </div>
+        </div>
+      </div>`:''}
       <div class="g2">
         <div class="card span2">
           <div class="card-header"><span class="card-title">Evolução do acumulado líquido</span>
@@ -896,7 +939,7 @@ window.CART={
         <div class="table-wrap"><table>
           <thead><tr>
             <th onclick="CART.sort('ticker')" style="cursor:pointer;user-select:none">Ativo <span id="srt-ticker"></span></th>
-            <th onclick="CART.sort('tipo')" style="cursor:pointer;user-select:none">Tipo <span id="srt-tipo"></span></th><th>Qtd</th><th>P. Médio</th><th>P. Atual</th>
+            <th>Tipo</th><th>Qtd</th><th>P. Médio</th><th>P. Atual</th>
             <th onclick="CART.sort('inv')" style="cursor:pointer;user-select:none">Investido <span id="srt-inv"></span></th>
             <th onclick="CART.sort('at')" style="cursor:pointer;user-select:none">Atual <span id="srt-at"></span></th>
             <th onclick="CART.sort('lucro')" style="cursor:pointer;user-select:none">Lucro R$ <span id="srt-lucro"></span></th>
@@ -1023,7 +1066,6 @@ window.CART={
     if(!perfil) return;
     const fn={
       ticker:(a)=>a.ticker,
-      tipo:(a)=>a.tipo||'',
       inv:(a)=>a.qtd*a.precoMedio,
       at:(a)=>a.qtd*(a.precoAtual||a.precoMedio),
       lucro:(a)=>(a.qtd*(a.precoAtual||a.precoMedio))-(a.qtd*a.precoMedio),
@@ -1032,7 +1074,7 @@ window.CART={
     }[col]||(a=>a.ticker);
     perfil.ativos.sort((a,b)=>{const va=fn(a),vb=fn(b);return typeof va==='string'?va.localeCompare(vb)*this._sortDir:(vb-va)*this._sortDir*-1;});
     // Atualiza ícones
-    ['ticker','tipo','inv','at','lucro','pct','dia'].forEach(c=>{const el=document.getElementById('srt-'+c);if(el)el.textContent='';});
+    ['ticker','inv','at','lucro','pct','dia'].forEach(c=>{const el=document.getElementById('srt-'+c);if(el)el.textContent='';});
     const icon=document.getElementById('srt-'+col);
     if(icon) icon.textContent=this._sortDir===1?' ↑':' ↓';
     // Re-renderiza só o tbody
@@ -1690,6 +1732,14 @@ async function init(){
 
   // Escuta meta
   dbWatch('meta',snap=>{if(snap.exists())S.meta=snap.data().meta||null;});
+
+  // Escuta saldo anterior
+  dbWatch('dashboard_anterior',snap=>{
+    if(snap.exists()){
+      S.tradeAnterior=snap.data();
+      if(S.view==='trade'&&S.tradePayload) TRADE.render(S.tradePayload,S.tradeUpdAt);
+    }
+  });
 
   startAutoUpdate(S.perfilAtivo);
 }
